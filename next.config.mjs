@@ -2,6 +2,7 @@
 const nextConfig = {
   reactStrictMode: false,
   poweredByHeader: false,
+<<<<<<< HEAD
   async headers() {
     return [{
       source: '/:path*',
@@ -13,6 +14,8 @@ const nextConfig = {
       ],
     }];
   },
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
 };
 
 export default nextConfig;

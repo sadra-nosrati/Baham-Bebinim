@@ -37,9 +37,15 @@ export default function Home() {
     // navigation; only fall back to a one-time query value when storage fails.
     let storageWorked = false;
     try {
+<<<<<<< HEAD
       sessionStorage.setItem('baham-bebinim-name', safeName);
       localStorage.setItem('baham-bebinim-name', safeName);
       storageWorked = sessionStorage.getItem('baham-bebinim-name') === safeName;
+=======
+      sessionStorage.setItem('watch-name', safeName);
+      localStorage.setItem('watch-name', safeName);
+      storageWorked = sessionStorage.getItem('watch-name') === safeName;
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
     } catch {}
 
     const fallback = storageWorked ? '' : `?name=${encodeURIComponent(safeName)}`;
@@ -49,8 +55,13 @@ export default function Home() {
   return (
     <main className="landing">
       <section className="hero-card">
+<<<<<<< HEAD
         <div className="brand-mark"><span aria-hidden="true">BB</span></div>
         <p className="eyebrow">BAHAM BEBINIM</p>
+=======
+        <div className="brand-mark"><span aria-hidden="true">PLAY</span></div>
+        <p className="eyebrow">WATCH TOGETHER</p>
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
         <h1>فیلم رو باهم ببینید،<br/>حتی وقتی کنار هم نیستید.</h1>
         <p className="sub">اتاق خصوصی بساز، ویدیو رو همزمان پخش کن و وسط فیلم چت و ری‌اکشن بفرست.</p>
         <form onSubmit={enter} className="join-form">

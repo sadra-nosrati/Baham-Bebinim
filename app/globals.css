@@ -1338,6 +1338,7 @@
 }
 .role-emoji-picker{max-height:142px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
 @media(max-width:920px),(pointer:coarse){.role-emoji-picker{max-height:126px}}
+<<<<<<< HEAD
 
 
 /* v3.18 — GitHub/public-instance polish */
@@ -1365,3 +1366,5 @@
   display:none!important;
 }
 .role-emoji-picker{overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1

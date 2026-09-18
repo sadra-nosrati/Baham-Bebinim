@@ -6,7 +6,11 @@ const next = require('next');
 const { Server } = require('socket.io');
 
 const dev = process.env.NODE_ENV !== 'production' && !process.argv.includes('--production');
+<<<<<<< HEAD
 const hostname = process.env.HOST || '127.0.0.1';
+=======
+const hostname = process.env.HOST || '0.0.0.0';
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
 const port = Number(process.env.PORT || 3000);
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
@@ -20,13 +24,18 @@ const CHAT_TTL_MS = 60 * 60 * 1000;
 const CHAT_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const CHAT_AUDIO_MAX_BYTES = 8 * 1024 * 1024;
 const CHAT_VOICE_MAX_MS = 5 * 60 * 1000;
+<<<<<<< HEAD
 const DATA_HOME = process.env.BAHAM_BEBINIM_DATA_DIR || path.join(process.env.HOME || '/tmp', '.baham-bebinim');
 const LEGACY_DATA_HOME = path.join(process.env.HOME || '/tmp', '.cinema');
 const CHAT_UPLOAD_DIR = process.env.BAHAM_BEBINIM_CHAT_UPLOAD_DIR || process.env.CHAT_UPLOAD_DIR || '/tmp/baham-bebinim-chat';
+=======
+const CHAT_UPLOAD_DIR = process.env.CHAT_UPLOAD_DIR || '/tmp/cinema-chat-images';
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
 const CHAT_UPLOAD_PREFIX = '/chat-image/';
 const CHAT_AUDIO_PREFIX = '/chat-audio/';
 const CHAT_MENTION_LIMIT = 8;
 
+<<<<<<< HEAD
 // Browser-profile saved videos. Baham Bebinim has no server-side account system yet,
 // so the opaque clientKey is used as a private browser-profile identifier. Saved-video
 // files are split per profile to avoid rewriting one growing JSON file on every save.
@@ -62,6 +71,23 @@ const ROOM_PROGRESS_FILE = process.env.BAHAM_BEBINIM_PROGRESS_FILE || process.en
 const LEGACY_ROOM_PROGRESS_FILE = path.join(LEGACY_DATA_HOME, 'room-progress.json');
 const configuredProgressTtlDays = Number(process.env.BAHAM_BEBINIM_PROGRESS_TTL_DAYS || process.env.CINEMA_PROGRESS_TTL_DAYS);
 const configuredProgressMax = Number(process.env.BAHAM_BEBINIM_PROGRESS_MAX || process.env.CINEMA_PROGRESS_MAX);
+=======
+// Browser-profile saved videos. The current project has no login system, so the
+// opaque clientKey acts as the user's private browser profile identifier. It is
+// never exposed through public room state and is persisted client-side.
+const USER_SAVES_FILE = process.env.CINEMA_USER_SAVES_FILE || path.join(process.env.HOME || '/tmp', '.cinema', 'user-saved-videos.json');
+const USER_SAVES_MAX_PER_USER = 40;
+const USER_SAVES_FLUSH_MS = 1200;
+const savedUserVideos = new Map();
+let userSavesDirty = false;
+let userSavesFlushTimer = null;
+
+// Persist only the minimal media resume state. Chat, uploaded media, members, roles,
+// passwords and moderation state intentionally remain ephemeral.
+const ROOM_PROGRESS_FILE = process.env.CINEMA_PROGRESS_FILE || path.join(process.env.HOME || '/tmp', '.cinema', 'room-progress.json');
+const configuredProgressTtlDays = Number(process.env.CINEMA_PROGRESS_TTL_DAYS);
+const configuredProgressMax = Number(process.env.CINEMA_PROGRESS_MAX);
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
 const ROOM_PROGRESS_TTL_MS = (Number.isFinite(configuredProgressTtlDays) ? Math.max(1, Math.min(3650, configuredProgressTtlDays)) : 90) * 24 * 60 * 60 * 1000;
 const ROOM_PROGRESS_MAX = Number.isFinite(configuredProgressMax) ? Math.max(50, Math.min(5000, Math.floor(configuredProgressMax))) : 1000;
 const ROOM_PROGRESS_SNAPSHOT_MS = 5000;
@@ -70,8 +96,13 @@ const savedRoomProgress = new Map();
 const roomProgressSnapshotAt = new Map();
 let roomProgressDirty = false;
 let roomProgressFlushTimer = null;
+<<<<<<< HEAD
 const ALLOWED_REACTIONS = new Set(['😂','😱','❤️','🍿','🔥','😭','👀','👏','🎬','😍']);
 const ALLOWED_ROLE_EMOJIS = new Set(['','❤️','⭐','🔥','🌙','🎬','🍿','👑','🌸','✨','💞','🎧','😈','💎','⚡','🌊','☕','🚀','🎮','😘','💋','😍','💕','💗','💖','😽','😻','🐱','🐈','😺','😸','😹','😿','🌹']);
+=======
+const ALLOWED_REACTIONS = new Set(['😂','😱','❤️','🍿','🔥','😭','👀','👏','🎬','🤯']);
+const ALLOWED_ROLE_EMOJIS = new Set(['','❤️','⭐','🔥','🌙','🎬','🍿','👑','🌸','✨','💞','🎧','🛡️','😈','🧠','🎞️','💎','⚡','🌊','🦋','🕶️','☕','🚀','🎮','😘','💋','🥰','😍','🫶','💕','💗','💖','😽','😻','🐱','🐈','😺','😸','😹','😿','🫂','🌹','🧸']);
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
 const ALLOWED_ROLE_COLORS = new Set(['#ff5c7c','#ff9f43','#ffd166','#54d49a','#4dd0e1','#6c8cff','#b983ff','#f472b6','#7c4dff','#5bd0c5','#ff7a59','#8bd450','#f6a6ff','#7aa2ff']);
 
 function cleanRoomId(value) {
@@ -182,11 +213,15 @@ function chatAudioPathFromUrl(url) {
 function deleteChatUpload(url) {
   const filepath = chatImagePathFromUrl(url) || chatAudioPathFromUrl(url);
   if (!filepath) return;
+<<<<<<< HEAD
   fs.stat(filepath, (statError, stat) => {
     fs.unlink(filepath, (unlinkError) => {
       if (!unlinkError && !statError && stat?.isFile()) chatUploadBytes = Math.max(0, chatUploadBytes - stat.size);
     });
   });
+=======
+  fs.unlink(filepath, () => {});
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
   fs.unlink(`${filepath}.meta`, () => {});
 }
 function deleteChatImage(url) { deleteChatUpload(url); }
@@ -213,7 +248,11 @@ function cleanupUploadDir({ purgeAll = false } = {}) {
       if (!/^[a-zA-Z0-9._-]+$/.test(filename)) continue;
       const filepath = path.join(CHAT_UPLOAD_DIR, filename);
       fs.stat(filepath, (statError, stat) => {
+<<<<<<< HEAD
         if (!statError && stat.isFile() && (purgeAll || stat.mtimeMs < cutoff)) fs.unlink(filepath, (unlinkError) => { if (!unlinkError) chatUploadBytes = Math.max(0, chatUploadBytes - stat.size); });
+=======
+        if (!statError && stat.isFile() && (purgeAll || stat.mtimeMs < cutoff)) fs.unlink(filepath, () => {});
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
       });
     }
   });
@@ -222,6 +261,7 @@ function cleanupUploadDir({ purgeAll = false } = {}) {
 function cleanClientKey(value) {
   return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80);
 }
+<<<<<<< HEAD
 function allowSocketAction(socket, key, limit, windowMs) {
   if (!socket?.data) return false;
   if (!(socket.data.actionWindows instanceof Map)) socket.data.actionWindows = new Map();
@@ -237,6 +277,8 @@ function allowSocketAction(socket, key, limit, windowMs) {
   return true;
 }
 
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
 function cleanRoomPassword(value) {
   return String(value ?? '').normalize('NFKC').slice(0, 64);
 }
@@ -330,6 +372,7 @@ function pruneSavedProgress(now = Date.now()) {
 }
 
 function loadSavedProgress() {
+<<<<<<< HEAD
   const candidates = [ROOM_PROGRESS_FILE];
   if (LEGACY_ROOM_PROGRESS_FILE !== ROOM_PROGRESS_FILE) candidates.push(LEGACY_ROOM_PROGRESS_FILE);
   for (const candidate of candidates) {
@@ -352,6 +395,21 @@ function loadSavedProgress() {
     } catch (error) {
       if (error?.code !== 'ENOENT') console.warn('[room-progress:load]', error?.message || error);
     }
+=======
+  try {
+    const raw = fs.readFileSync(ROOM_PROGRESS_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    const source = parsed && typeof parsed.rooms === 'object' ? parsed.rooms : parsed;
+    if (!source || typeof source !== 'object') return;
+    for (const [rawRoomId, value] of Object.entries(source)) {
+      const roomId = cleanRoomId(rawRoomId);
+      const progress = cleanSavedProgress(value);
+      if (roomId && progress) savedRoomProgress.set(roomId, progress);
+    }
+    pruneSavedProgress();
+  } catch (error) {
+    if (error?.code !== 'ENOENT') console.warn('[room-progress:load]', error?.message || error);
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
   }
 }
 
@@ -453,6 +511,7 @@ function publicSavedVideo(item) {
   };
 }
 
+<<<<<<< HEAD
 function savedProfileId(clientKey) {
   const key = cleanClientKey(clientKey);
   return key ? createHash('sha256').update(key).digest('hex').slice(0, 40) : '';
@@ -498,11 +557,42 @@ function writeSavedProfileFile(clientKey) {
     fs.renameSync(tempPath, filepath);
     savedProfileIds.add(profileId);
     dirtyUserSaveKeys.delete(key);
+=======
+function loadUserSavedVideos() {
+  try {
+    const raw = fs.readFileSync(USER_SAVES_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    const source = parsed && typeof parsed.users === 'object' ? parsed.users : parsed;
+    if (!source || typeof source !== 'object') return;
+    for (const [rawKey, values] of Object.entries(source)) {
+      const key = cleanClientKey(rawKey);
+      if (!key || !Array.isArray(values)) continue;
+      const items = values.map(cleanSavedVideoItem).filter(Boolean).sort((a,b)=>b.updatedAt-a.updatedAt).slice(0,USER_SAVES_MAX_PER_USER);
+      if (items.length) savedUserVideos.set(key, items);
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') console.warn('[user-saves:load]', error?.message || error);
+  }
+}
+
+function flushUserSavedVideosNow() {
+  if (!userSavesDirty) return;
+  try {
+    const directory = path.dirname(USER_SAVES_FILE);
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const users = Object.fromEntries([...savedUserVideos.entries()].filter(([,items])=>Array.isArray(items)&&items.length));
+    const payload = JSON.stringify({ version: 1, savedAt: Date.now(), users });
+    const tempPath = `${USER_SAVES_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tempPath, payload, { encoding:'utf8', mode:0o600 });
+    fs.renameSync(tempPath, USER_SAVES_FILE);
+    userSavesDirty = false;
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
   } catch (error) {
     console.error('[user-saves:flush]', error?.message || error);
   }
 }
 
+<<<<<<< HEAD
 function scheduleUserSavedVideosFlush(clientKey, delay = USER_SAVES_FLUSH_MS) {
   const key = cleanClientKey(clientKey);
   if (!key) return;
@@ -564,11 +654,22 @@ function initializeUserSavedVideosStorage() {
   } catch (error) {
     console.warn('[user-saves:migrate]', error?.message || error);
   }
+=======
+function scheduleUserSavedVideosFlush(delay = USER_SAVES_FLUSH_MS) {
+  userSavesDirty = true;
+  if (userSavesFlushTimer) return;
+  userSavesFlushTimer = setTimeout(() => {
+    userSavesFlushTimer = null;
+    flushUserSavedVideosNow();
+  }, Math.max(250, Number(delay) || USER_SAVES_FLUSH_MS));
+  userSavesFlushTimer.unref?.();
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
 }
 
 function getUserSavedVideos(clientKey) {
   const key = cleanClientKey(clientKey);
   if (!key) return [];
+<<<<<<< HEAD
   if (!savedUserVideos.has(key)) {
     let items = [];
     const filepath = savedProfilePath(key);
@@ -584,13 +685,19 @@ function getUserSavedVideos(clientKey) {
   }
   touchUserSaveCache(key);
   return (savedUserVideos.get(key) || []).slice().sort((a, b) => b.updatedAt - a.updatedAt);
+=======
+  return (savedUserVideos.get(key) || []).slice().sort((a,b)=>b.updatedAt-a.updatedAt);
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
 }
 
 function saveVideoToUserProfile(clientKey, room) {
   const key = cleanClientKey(clientKey);
   if (!key || !room?.originalUrl || !room?.videoUrl) return null;
+<<<<<<< HEAD
   const profileId = savedProfileId(key);
   if (!savedProfileIds.has(profileId) && !dirtyUserSaveKeys.has(key) && savedProfileIds.size >= USER_SAVES_MAX_PROFILES) return null;
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
   const now = Date.now();
   const playback = currentPlayback(room);
   const existing = getUserSavedVideos(key);
@@ -607,10 +714,16 @@ function saveVideoToUserProfile(clientKey, room) {
     updatedAt: now,
   });
   if (!item) return null;
+<<<<<<< HEAD
   const next = [item, ...existing.filter(entry => entry.id !== item.id && entry.originalUrl !== item.originalUrl)].slice(0, USER_SAVES_MAX_PER_USER);
   savedUserVideos.set(key, next);
   touchUserSaveCache(key);
   scheduleUserSavedVideosFlush(key);
+=======
+  const next = [item, ...existing.filter(entry => entry.id !== item.id && entry.originalUrl !== item.originalUrl)].slice(0,USER_SAVES_MAX_PER_USER);
+  savedUserVideos.set(key, next);
+  scheduleUserSavedVideosFlush();
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
   return item;
 }
 
@@ -621,9 +734,14 @@ function deleteUserSavedVideo(clientKey, id) {
   const current = getUserSavedVideos(key);
   const next = current.filter(item => item.id !== cleanId);
   if (next.length === current.length) return false;
+<<<<<<< HEAD
   savedUserVideos.set(key, next);
   touchUserSaveCache(key);
   scheduleUserSavedVideosFlush(key);
+=======
+  if (next.length) savedUserVideos.set(key, next); else savedUserVideos.delete(key);
+  scheduleUserSavedVideosFlush();
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
   return true;
 }
 
@@ -687,7 +805,11 @@ async function resolveMediaInput(value, qualityMode = 'auto') {
       signal: controller.signal,
       headers: {
         accept: 'application/json,text/plain,*/*',
+<<<<<<< HEAD
         'user-agent': 'BahamBebinim/3.18',
+=======
+        'user-agent': 'Mozilla/5.0 WatchTogether/2.1',
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
         referer: originalUrl,
       },
     });
@@ -895,7 +1017,11 @@ function leaveCurrentRoom(io, socket) {
 }
 
 loadSavedProgress();
+<<<<<<< HEAD
 initializeUserSavedVideosStorage();
+=======
+loadUserSavedVideos();
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
 
 app.prepare().then(() => {
   // Chat is intentionally non-persistent, so any temp media upload left from a previous process is orphaned.
@@ -977,7 +1103,11 @@ app.prepare().then(() => {
     allowUpgrades: false,
     pingInterval: 20000,
     pingTimeout: 20000,
+<<<<<<< HEAD
     maxHttpBufferSize: 9 * 1024 * 1024,
+=======
+    maxHttpBufferSize: 12 * 1024 * 1024,
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
   });
 
   const cleanupTimer = setInterval(() => {
@@ -1014,12 +1144,15 @@ app.prepare().then(() => {
   process.once('SIGTERM', handleShutdownSignal);
 
   io.on('connection', (socket) => {
+<<<<<<< HEAD
     if (io.engine.clientsCount > MAX_SOCKET_CONNECTIONS) {
       socket.emit('server:busy', { error: 'capacity' });
       socket.disconnect(true);
       return;
     }
     socket.data.actionWindows = new Map();
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
     socket.data.lastMessageAt = 0;
     socket.data.lastImageAt = 0;
     socket.data.lastVoiceAt = 0;
@@ -1027,12 +1160,18 @@ app.prepare().then(() => {
     socket.data.seenMessageIds = new Set();
 
     socket.on('clock:ping', (ack = () => {}) => {
+<<<<<<< HEAD
       if (!allowSocketAction(socket, 'clock', 20, 10000)) return ack({ error: 'rate-limit' });
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
       ack({ serverNow: Date.now() });
     });
 
     socket.on('room:probe', ({ roomId }, ack = () => {}) => {
+<<<<<<< HEAD
       if (!allowSocketAction(socket, 'room-probe', 20, 10000)) return ack({ ok: false, error: 'rate-limit' });
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
       roomId = cleanRoomId(roomId);
       if (!roomId) return ack({ ok: false, error: 'invalid-room' });
       const room = rooms.get(roomId);
@@ -1040,14 +1179,20 @@ app.prepare().then(() => {
     });
 
     socket.on('room:join', ({ roomId, name, clientKey, password }, ack = () => {}) => {
+<<<<<<< HEAD
       if (!allowSocketAction(socket, 'room-join', 8, 15000)) return ack({ ok: false, error: 'rate-limit' });
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
       roomId = cleanRoomId(roomId);
       if (!roomId) return ack({ ok: false, error: 'invalid-room' });
       if (socket.data.roomId && socket.data.roomId !== roomId) leaveCurrentRoom(io, socket);
 
       const existingRoom = rooms.get(roomId);
+<<<<<<< HEAD
       if (!existingRoom && rooms.size >= MAX_ACTIVE_ROOMS) return ack({ ok: false, error: 'server-busy' });
       if (existingRoom && !existingRoom.members.has(socket.id) && existingRoom.members.size >= MAX_ROOM_MEMBERS) return ack({ ok: false, error: 'room-full' });
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
       if (existingRoom?.passwordDigest && !passwordMatches(existingRoom.passwordDigest, password)) {
         return ack({ ok: false, error: cleanRoomPassword(password) ? 'invalid-password' : 'password-required', passwordRequired: true });
       }
@@ -1105,14 +1250,20 @@ app.prepare().then(() => {
     socket.on('room:leave', () => leaveCurrentRoom(io, socket));
 
     socket.on('saved-video:list', (ack = () => {}) => {
+<<<<<<< HEAD
       if (!allowSocketAction(socket, 'saved-list', 20, 60000)) return ack({ ok: false, error: 'rate-limit' });
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
       const key = cleanClientKey(socket.data.clientKey);
       if (!key) return ack({ ok: false, error: 'profile-unavailable' });
       ack({ ok: true, items: getUserSavedVideos(key).map(publicSavedVideo) });
     });
 
     socket.on('saved-video:save', (ack = () => {}) => {
+<<<<<<< HEAD
       if (!allowSocketAction(socket, 'saved-write', 20, 60000)) return ack({ ok: false, error: 'rate-limit' });
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
       const room = rooms.get(socket.data.roomId);
       if (!room || !room.members.has(socket.id)) return ack({ ok: false, error: 'not-in-room' });
       if (!isRoomModerator(room, socket)) return ack({ ok: false, error: 'forbidden' });
@@ -1123,7 +1274,10 @@ app.prepare().then(() => {
     });
 
     socket.on('saved-video:delete', ({ id }, ack = () => {}) => {
+<<<<<<< HEAD
       if (!allowSocketAction(socket, 'saved-write', 20, 60000)) return ack({ ok: false, error: 'rate-limit' });
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
       const key = cleanClientKey(socket.data.clientKey);
       if (!key) return ack({ ok: false, error: 'profile-unavailable' });
       const deleted = deleteUserSavedVideo(key, id);
@@ -1131,7 +1285,10 @@ app.prepare().then(() => {
     });
 
     socket.on('saved-video:use', async ({ id }, ack = () => {}) => {
+<<<<<<< HEAD
       if (!allowSocketAction(socket, 'saved-use', 10, 60000)) return ack({ ok: false, error: 'rate-limit' });
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
       const roomId = socket.data.roomId;
       const room = rooms.get(roomId);
       if (!room || !room.members.has(socket.id)) return ack({ ok: false, error: 'not-in-room' });
@@ -1329,7 +1486,10 @@ app.prepare().then(() => {
     });
 
     socket.on('video:suggest', ({ url }, ack = () => {}) => {
+<<<<<<< HEAD
       if (!allowSocketAction(socket, 'video-suggest', 20, 60000)) return ack({ ok: false, error: 'rate-limit' });
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
       const roomId = socket.data.roomId;
       const room = rooms.get(roomId);
       if (!room) return ack({ ok: false, error: 'room-not-found' });
@@ -1517,7 +1677,10 @@ app.prepare().then(() => {
       if (!buffer.length || buffer.length > CHAT_IMAGE_MAX_BYTES || (Number.isFinite(declaredSize) && declaredSize > CHAT_IMAGE_MAX_BYTES)) {
         return ack({ ok: false, error: 'image-too-large', limit: CHAT_IMAGE_MAX_BYTES });
       }
+<<<<<<< HEAD
       if (chatUploadBytes + buffer.length > CHAT_UPLOAD_MAX_TOTAL_BYTES) return ack({ ok: false, error: 'storage-busy' });
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
       socket.data.lastImageAt = now;
       fs.mkdirSync(CHAT_UPLOAD_DIR, { recursive: true });
       const extension = safeImageExtension(name, mime);
@@ -1526,7 +1689,10 @@ app.prepare().then(() => {
       try {
         fs.writeFileSync(filepath, buffer, { flag: 'wx', mode: 0o600 });
         fs.writeFileSync(`${filepath}.meta`, mime, { mode: 0o600 });
+<<<<<<< HEAD
         chatUploadBytes += buffer.length;
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
       } catch (error) {
         console.error('[chat:image]', error?.message || error);
         return ack({ ok: false, error: 'upload-failed' });
@@ -1576,7 +1742,10 @@ app.prepare().then(() => {
       if (!buffer.length || buffer.length > CHAT_AUDIO_MAX_BYTES || (Number.isFinite(declaredSize) && declaredSize > CHAT_AUDIO_MAX_BYTES)) {
         return ack({ ok: false, error: 'audio-too-large', limit: CHAT_AUDIO_MAX_BYTES });
       }
+<<<<<<< HEAD
       if (chatUploadBytes + buffer.length > CHAT_UPLOAD_MAX_TOTAL_BYTES) return ack({ ok: false, error: 'storage-busy' });
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
       socket.data.lastVoiceAt = now;
       fs.mkdirSync(CHAT_UPLOAD_DIR, { recursive: true });
       const filename = `${now}-${randomBytes(8).toString('hex')}${safeAudioExtension(mime)}`;
@@ -1584,7 +1753,10 @@ app.prepare().then(() => {
       try {
         fs.writeFileSync(filepath, buffer, { flag: 'wx', mode: 0o600 });
         fs.writeFileSync(`${filepath}.meta`, mime, { mode: 0o600 });
+<<<<<<< HEAD
         chatUploadBytes += buffer.length;
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
       } catch (error) {
         console.error('[chat:voice]', error?.message || error);
         return ack({ ok: false, error: 'upload-failed' });
@@ -1727,6 +1899,10 @@ app.prepare().then(() => {
   });
 
   httpServer.listen(port, hostname, () => {
+<<<<<<< HEAD
     console.log(`> Baham Bebinim ready on http://${hostname}:${port}`);
+=======
+    console.log(`> Watch Together ready on http://${hostname}:${port}`);
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
   });
 });

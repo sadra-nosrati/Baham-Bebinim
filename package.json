@@ -1,14 +1,22 @@
 {
+<<<<<<< HEAD
   "name": "baham-bebinim",
   "version": "3.18.0",
   "private": true,
   "description": "Baham Bebinim — synced video rooms with realtime chat and reactions",
+=======
+  "name": "video-rooms-next",
+  "version": "3.17.0",
+  "private": true,
+  "description": "Mobile-first watch together app with Next.js and Socket.IO",
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
   "scripts": {
     "dev": "node server.js",
     "build": "next build",
     "start": "node server.js --production"
   },
   "dependencies": {
+<<<<<<< HEAD
     "hls.js": "1.6.13",
     "next": "16.3.3",
     "react": "19.2.8",
@@ -18,5 +26,13 @@
   },
   "engines": {
     "node": ">=22 <25"
+=======
+    "hls.js": "^1.6.13",
+    "next": "16.3.3",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "socket.io": "4.8.1",
+    "socket.io-client": "4.8.1"
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
   }
 }

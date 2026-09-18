@@ -210,6 +210,7 @@ UI-only interaction polish. Playback room sync protocol was not changed. Chat sc
 - Fixed mobile Reply/Voice message bubbles being clipped by legacy fixed max-heights.
 - Normal members can create/select/remove a room role for themselves only; host permissions for assigning roles to any member remain unchanged.
 - Server enforces self-only role changes for non-host users.
+<<<<<<< HEAD
 
 
 ## v3.18.0 — Baham Bebinim public/GitHub hardening
@@ -223,3 +224,5 @@ UI-only interaction polish. Playback room sync protocol was not changed. Chat sc
 - Removed emoji glyphs that are commonly rendered as tofu/empty squares on older phones and forced a native color-emoji font stack for emoji controls.
 - Role emoji scrolling stays functional but its native white scrollbar is hidden.
 - Added basic security response headers through Next.js.
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1

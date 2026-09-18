@@ -4,9 +4,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import Hls from 'hls.js';
 
+<<<<<<< HEAD
 const REACTIONS = ['😂','😱','❤️','🍿','🔥','😭','👀','👏','🎬','😍'];
 const CHAT_EMOJIS = ['🍿','😂','😱','❤️','🔥','😭','👀','🎬','👏','😎','💀','😡','✨','🙈','😘','💋','😍','💕','💗','💖','😽','😻','🐱','🐈','😺','😸','😹','😿','🌹',':]',':['];
 const ROLE_EMOJIS = ['', '❤️','⭐','🔥','🌙','🎬','🍿','👑','🌸','✨','💞','🎧','😈','💎','⚡','🌊','☕','🚀','🎮','😘','💋','😍','💕','💗','💖','😽','😻','🐱','🐈','😺','😸','😹','😿','🌹'];
+=======
+const REACTIONS = ['😂','😱','❤️','🍿','🔥','😭','👀','👏','🎬','🤯'];
+const CHAT_EMOJIS = ['🍿','😂','😱','❤️','🔥','😭','👀','🎬','🤯','👏','😎','💀','😡','✨','🙈','😘','💋','🥰','😍','🫶','💕','💗','💖','😽','😻','🐱','🐈','😺','😸','😹','😿','🫂','🌹','🧸',':]',':['];
+const ROLE_EMOJIS = ['', '❤️','⭐','🔥','🌙','🎬','🍿','👑','🌸','✨','💞','🎧','🛡️','😈','🧠','🎞️','💎','⚡','🌊','🦋','🕶️','☕','🚀','🎮','😘','💋','🥰','😍','🫶','💕','💗','💖','😽','😻','🐱','🐈','😺','😸','😹','😿','🫂','🌹','🧸'];
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
 const ROLE_COLORS = ['#ff5c7c','#ff9f43','#ffd166','#54d49a','#4dd0e1','#6c8cff','#b983ff','#f472b6','#7c4dff','#5bd0c5','#ff7a59','#8bd450','#f6a6ff','#7aa2ff'];
 const CHAT_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const CHAT_AUDIO_MAX_BYTES = 8 * 1024 * 1024;
@@ -384,12 +390,21 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     let storedName='';
     let clientKey='';
     try{
+<<<<<<< HEAD
       storedName=sessionStorage.getItem('baham-bebinim-name')||localStorage.getItem('baham-bebinim-name')||sessionStorage.getItem('watch-name')||localStorage.getItem('watch-name')||'';
       clientKey=localStorage.getItem('baham-bebinim-client-id')||sessionStorage.getItem('baham-bebinim-client-id')||localStorage.getItem('watch-client-id')||sessionStorage.getItem('watch-client-id')||'';
     }catch{}
     const name=(initialName||storedName||'مهمان').trim().slice(0,30)||'مهمان';
     if(!clientKey)clientKey=globalThis.crypto?.randomUUID?.().replace(/-/g,'')||`c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,10)}`;
     try{localStorage.setItem('baham-bebinim-client-id',clientKey);sessionStorage.setItem('baham-bebinim-client-id',clientKey);}catch{}
+=======
+      storedName=sessionStorage.getItem('watch-name')||localStorage.getItem('watch-name')||'';
+      clientKey=localStorage.getItem('watch-client-id')||sessionStorage.getItem('watch-client-id')||'';
+    }catch{}
+    const name=(initialName||storedName||'مهمان').trim().slice(0,30)||'مهمان';
+    if(!clientKey)clientKey=globalThis.crypto?.randomUUID?.().replace(/-/g,'')||`c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,10)}`;
+    try{localStorage.setItem('watch-client-id',clientKey);sessionStorage.setItem('watch-client-id',clientKey);}catch{}
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
     let disposed=false;
 
     function clockSample(){
@@ -424,9 +439,14 @@ export default function WatchRoom({ roomId, initialName = '' }) {
       socket.timeout(5000).emit('room:probe',{roomId:normalizedRoom},(probeErr,probe)=>{
         if(disposed)return;
         if(probeErr||!probe?.ok){
+<<<<<<< HEAD
           const wait=probe?.error==='rate-limit'?3000:1800;
           showNotice(probe?.error==='rate-limit'?'درخواست‌ها زیاد شده؛ چند لحظه صبر کن':'بررسی اتاق انجام نشد؛ دوباره تلاش می‌کنم');
           setTimeout(()=>{if(!disposed&&socket.connected)joinRoom(passwordValue)},wait);
+=======
+          showNotice('بررسی اتاق انجام نشد؛ دوباره تلاش می‌کنم');
+          setTimeout(()=>{if(!disposed&&socket.connected)joinRoom(passwordValue)},900);
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
           return;
         }
         if(probe.passwordRequired&&!passwordValue){
@@ -442,11 +462,16 @@ export default function WatchRoom({ roomId, initialName = '' }) {
             return;
           }
           if(err||!result?.ok){
+<<<<<<< HEAD
             if(result?.error==='room-full'){showNotice('ظرفیت این اتاق تکمیل شده');return;}
             if(result?.error==='server-busy'){showNotice('سرور فعلاً شلوغه؛ چند لحظه بعد دوباره وارد شو');return;}
             const wait=result?.error==='rate-limit'?3500:1800;
             showNotice(result?.error==='rate-limit'?'درخواست‌ها زیاد شده؛ چند لحظه صبر کن':'اتصال اتاق کامل نشد؛ دوباره تلاش می‌کنم');
             setTimeout(()=>{if(!disposed&&socket.connected)joinRoom(passwordValue)},wait);
+=======
+            showNotice('اتصال اتاق کامل نشد؛ دوباره تلاش می‌کنم');
+            setTimeout(()=>{if(!disposed&&socket.connected)joinRoom(passwordValue)},900);
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
             return;
           }
           joinPasswordRef.current=passwordValue||'';
@@ -467,7 +492,10 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     joinRoomRef.current=joinRoom;
 
     socket.on('connect',()=>{setConnected(true);joinRoom();});
+<<<<<<< HEAD
     socket.on('server:busy',()=>showNotice('سرور فعلاً ظرفیت اتصال جدید نداره؛ چند لحظه بعد دوباره امتحان کن'));
+=======
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
     socket.on('disconnect',()=>setConnected(false));
     socket.on('room:state',(next)=>{setRoom(next);pendingPlaybackRef.current=next.playback;});
     socket.on('room:video',(data)=>{setRoom(prev=>({...prev,...data}));setVideoInput(data.originalUrl||data.videoUrl);pendingPlaybackRef.current=data.playback;setNeedsGesture(false);});
@@ -1119,7 +1147,11 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     {isHost&&hostPlaybackRequest&&<div className="host-request-card" role="status"><span className="host-request-icon"><Icon name="bell" size={19}/></span><div><b>{hostPlaybackRequest.requesterName}</b><span>درخواست {hostPlaybackRequest.action==='pause'?'توقف':'پخش'} فیلم داده</span></div><button type="button" className="host-request-do" onClick={applyHostPlaybackRequest}>انجام بده</button><button type="button" className="host-request-close" onClick={()=>setHostPlaybackRequest(null)} aria-label="بستن"><Icon name="close" size={16}/></button></div>}
     <header className="room-header">
       <button className="header-icon brand-back" onClick={()=>setShowLeaveConfirm(true)} aria-label="خروج"><Icon name="back"/></button>
+<<<<<<< HEAD
       <div className="room-title"><b>{room.videoTitle||'Baham Bebinim'}</b><span className={connected?'online-dot connected':'online-dot'}>{connected?'متصل':'در حال اتصال'}</span></div>
+=======
+      <div className="room-title"><b>{room.videoTitle||'باهم ببینیم'}</b><span className={connected?'online-dot connected':'online-dot'}>{connected?'متصل':'در حال اتصال'}</span></div>
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
       <div className="room-actions">
         {isHost&&<button className={`header-icon security-button ${room.passwordProtected?'active':''}`} onClick={()=>{setRoomPassword('');setShowRoomSecurity(true)}} aria-label={room.passwordProtected?'تنظیم رمز اتاق':'گذاشتن رمز برای اتاق'}><Icon name="lock"/>{room.passwordProtected&&<span className="security-dot"/>}</button>}
         {canModerate&&room.videoUrl&&<button className={`header-icon quality-button ${showQuality?'active':''}`} onClick={toggleQuality} aria-label="تنظیم کیفیت پخش" title="کیفیت پخش"><span>HD</span></button>}

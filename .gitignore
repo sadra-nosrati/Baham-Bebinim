@@ -1,12 +1,24 @@
+<<<<<<< HEAD
 # Dependencies and builds
 node_modules/
 .next/
 out/
+=======
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Build / cache
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
 dist/
 build/
 .cache/
 .turbo/
 
+<<<<<<< HEAD
 # Local environment / secrets
 .env
 .env.*
@@ -18,11 +30,23 @@ build/
 *.crt
 
 # Logs and process files
+=======
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.production
+
+# Logs
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+<<<<<<< HEAD
 *.pid
 .pm2/
 
@@ -33,10 +57,15 @@ user-saved-videos.json
 room-progress.json
 chat-uploads/
 uploads/
+=======
+
+# Runtime / temporary files
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
 tmp/
 temp/
 *.tmp
 
+<<<<<<< HEAD
 # Tests / coverage
 coverage/
 
@@ -48,3 +77,37 @@ Thumbs.db
 desktop.ini
 *.swp
 *.swo
+=======
+# Cinema runtime data
+.cinema/
+user-saved-videos.json
+room-progress.json
+
+# Uploaded / temporary chat media
+cinema-chat-images/
+chat-uploads/
+uploads/
+
+# PM2
+.pm2/
+ecosystem.local.config.js
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Coverage
+coverage/
+
+# Misc
+*.pem
+*.key
+*.crt
+>>>>>>> 36a02df9b7a639aeb0a5afec20248a6dd6af8ec1
