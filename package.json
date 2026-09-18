@@ -1,0 +1,22 @@
+{
+  "name": "baham-bebinim",
+  "version": "3.18.0",
+  "private": true,
+  "description": "Baham Bebinim — synced video rooms with realtime chat and reactions",
+  "scripts": {
+    "dev": "node server.js",
+    "build": "next build",
+    "start": "node server.js --production"
+  },
+  "dependencies": {
+    "hls.js": "1.6.13",
+    "next": "16.3.3",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "socket.io": "4.8.1",
+    "socket.io-client": "4.8.1"
+  },
+  "engines": {
+    "node": ">=22 <25"
+  }
+}
