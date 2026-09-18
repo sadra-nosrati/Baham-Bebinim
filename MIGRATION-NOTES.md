@@ -223,3 +223,16 @@ UI-only interaction polish. Playback room sync protocol was not changed. Chat sc
 - Removed emoji glyphs that are commonly rendered as tofu/empty squares on older phones and forced a native color-emoji font stack for emoji controls.
 - Role emoji scrolling stays functional but its native white scrollbar is hidden.
 - Added basic security response headers through Next.js.
+
+
+## v3.19.0 — room cleanup, exact quality, player/chat UX
+
+- Empty room cleanup now forgets room video/progress instead of persisting it. Browser-profile Saved Videos remain independent and long-lived.
+- Chat image hard limit reduced to 3 MiB on both client and server.
+- Added transient centered play/pause state feedback and a dedicated exit-fullscreen icon.
+- Fullscreen shortcut accepts physical KeyF plus Persian `ب`.
+- Replaced low/high quality UI with actual detected resolution choices; HLS levels are locked to the selected height and direct multi-source providers select the matching source.
+- Reduced non-content bandwidth/overfetch with tighter HLS buffers, a much smaller low-quality timeline-preview buffer, slower preview seek churn, and 1s host playback snapshots. Main video/audio quality is not intentionally reduced.
+- Desktop source input/settings/delete controls now share one 40px height.
+- Added server-authoritative moderator message deletion, including cleanup of attached temporary media.
+- Chat now linkifies http(s) and www URLs without server-side URL fetching.

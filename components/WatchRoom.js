@@ -8,7 +8,7 @@ const REACTIONS = ['😂','😱','❤️','🍿','🔥','😭','👀','👏','�
 const CHAT_EMOJIS = ['🍿','😂','😱','❤️','🔥','😭','👀','🎬','👏','😎','💀','😡','✨','🙈','😘','💋','😍','💕','💗','💖','😽','😻','🐱','🐈','😺','😸','😹','😿','🌹',':]',':['];
 const ROLE_EMOJIS = ['', '❤️','⭐','🔥','🌙','🎬','🍿','👑','🌸','✨','💞','🎧','😈','💎','⚡','🌊','☕','🚀','🎮','😘','💋','😍','💕','💗','💖','😽','😻','🐱','🐈','😺','😸','😹','😿','🌹'];
 const ROLE_COLORS = ['#ff5c7c','#ff9f43','#ffd166','#54d49a','#4dd0e1','#6c8cff','#b983ff','#f472b6','#7c4dff','#5bd0c5','#ff7a59','#8bd450','#f6a6ff','#7aa2ff'];
-const CHAT_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const CHAT_IMAGE_MAX_BYTES = 3 * 1024 * 1024;
 const CHAT_AUDIO_MAX_BYTES = 8 * 1024 * 1024;
 const CHAT_VOICE_MAX_MS = 5 * 60 * 1000;
 
@@ -20,6 +20,7 @@ function Icon({ name, size = 20, strokeWidth = 1.9 }) {
     volume:<><path d="M11 5 6.8 9H3v6h3.8L11 19V5Z"/><path d="M15 9.5a4 4 0 0 1 0 5"/><path d="M17.7 7a7.5 7.5 0 0 1 0 10"/></>,
     muted:<><path d="M11 5 6.8 9H3v6h3.8L11 19V5Z"/><path d="m16 10 5 5M21 10l-5 5"/></>,
     fullscreen:<><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></>,
+    fullscreenExit:<><path d="M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5"/></>,
     panelClose:<><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 4v16"/><path d="m15 9-3 3 3 3"/></>,
     panelOpen:<><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 4v16"/><path d="m12 9 3 3-3 3"/></>,
     users:<><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></>,
@@ -68,18 +69,32 @@ function normalizedQualityOptions(values) { return [...new Set((Array.isArray(va
 function applyHlsQualityMode(hls, mode) {
   if(!hls)return;
   const levels=Array.isArray(hls.levels)?hls.levels:[];
-  if(mode==='auto'){hls.currentLevel=-1;hls.nextLevel=-1;return;}
-  if(!levels.length)return;
-  let targetIndex=-1;
-  for(let i=0;i<levels.length;i+=1){
-    const height=Number(levels[i]?.height)||0;
-    if(!height)continue;
-    if(targetIndex<0){targetIndex=i;continue;}
-    const current=Number(levels[targetIndex]?.height)||0;
-    if((mode==='high'&&height>current)||(mode==='low'&&height<current))targetIndex=i;
+  const normalized=String(mode||'auto').toLowerCase();
+  if(normalized==='auto'){hls.currentLevel=-1;hls.nextLevel=-1;hls.loadLevel=-1;return;}
+  const candidates=levels.map((level,index)=>({index,height:Number(level?.height)||0,bitrate:Number(level?.bitrate)||0})).filter(item=>item.height>0);
+  if(!candidates.length)return;
+  let chosen=null;
+  if(normalized==='high'){
+    chosen=candidates.reduce((best,item)=>!best||item.height>best.height||(item.height===best.height&&item.bitrate>best.bitrate)?item:best,null);
+  }else if(normalized==='low'){
+    const minHeight=Math.min(...candidates.map(item=>item.height));
+    chosen=candidates.filter(item=>item.height===minHeight).reduce((best,item)=>!best||item.bitrate>best.bitrate?item:best,null);
+  }else{
+    const requested=Number(normalized.replace(/p$/,''));
+    if(!Number.isFinite(requested)||requested<144)return;
+    const exact=candidates.filter(item=>item.height===requested);
+    if(exact.length)chosen=exact.reduce((best,item)=>!best||item.bitrate>best.bitrate?item:best,null);
+    else chosen=candidates.reduce((best,item)=>{
+      if(!best)return item;
+      const distance=Math.abs(item.height-requested),bestDistance=Math.abs(best.height-requested);
+      if(distance!==bestDistance)return distance<bestDistance?item:best;
+      if(item.height!==best.height)return item.height<best.height?item:best;
+      return item.bitrate>best.bitrate?item:best;
+    },null);
   }
-  if(targetIndex>=0){hls.currentLevel=targetIndex;hls.nextLevel=targetIndex;}
+  if(chosen){hls.currentLevel=chosen.index;hls.nextLevel=chosen.index;hls.loadLevel=chosen.index;}
 }
+
 function typingLabel(users) {
   const names=(users||[]).map(item=>item.name).filter(Boolean);
   if(!names.length)return '';
@@ -90,9 +105,9 @@ function typingLabel(users) {
 
 function imageMimeFromFile(file){
   const direct=String(file?.type||'').toLowerCase();
-  if(direct.startsWith('image/'))return direct;
+  if(direct.startsWith('image/')&&direct!=='image/svg+xml')return direct;
   const ext=String(file?.name||'').toLowerCase().match(/\.[a-z0-9]+$/)?.[0]||'';
-  return ({'.jpg':'image/jpeg','.jpeg':'image/jpeg','.jfif':'image/jpeg','.png':'image/png','.gif':'image/gif','.webp':'image/webp','.avif':'image/avif','.heic':'image/heic','.heif':'image/heif','.bmp':'image/bmp','.tif':'image/tiff','.tiff':'image/tiff','.ico':'image/x-icon','.svg':'image/svg+xml'})[ext]||'';
+  return ({'.jpg':'image/jpeg','.jpeg':'image/jpeg','.jfif':'image/jpeg','.png':'image/png','.gif':'image/gif','.webp':'image/webp','.avif':'image/avif','.heic':'image/heic','.heif':'image/heif','.bmp':'image/bmp','.tif':'image/tiff','.tiff':'image/tiff','.ico':'image/x-icon'})[ext]||'';
 }
 
 function normalizeRoomCode(value) {
@@ -115,23 +130,29 @@ function replyPreviewText(reply){
 }
 function renderChatText(text,mentions,selfId){
   const source=String(text||'');
-  const unique=[];
-  const seen=new Set();
+  const mentionByToken=new Map();
   for(const mention of Array.isArray(mentions)?mentions:[]){
     const token=`@${mention?.name||''}`;
-    if(token.length<2||seen.has(token))continue;
-    seen.add(token);
-    unique.push({token,id:mention.id});
+    if(token.length>=2&&!mentionByToken.has(token))mentionByToken.set(token,{id:mention.id,token});
   }
-  if(!unique.length)return source;
-  unique.sort((a,b)=>b.token.length-a.token.length);
-  const byToken=new Map(unique.map(item=>[item.token,item]));
-  const regex=new RegExp(`(${unique.map(item=>escapeRegExp(item.token)).join('|')})`,'g');
-  return source.split(regex).map((part,index)=>{
-    const mention=byToken.get(part);
-    return mention?<span key={`${mention.id}-${index}`} className={`chat-mention ${mention.id===selfId?'is-self':''}`}>{part}</span>:part;
+  const mentionPattern=[...mentionByToken.keys()].sort((a,b)=>b.length-a.length).map(escapeRegExp).join('|');
+  const urlPattern=String.raw`(?:https?:\/\/|www\.)[^\s<>"'\x60]+`;
+  const matcher=new RegExp(`(${mentionPattern?`${mentionPattern}|`:''}${urlPattern})`,'giu');
+  return source.split(matcher).filter(part=>part!=='').map((part,index)=>{
+    const mention=mentionByToken.get(part);
+    if(mention)return <span key={`m-${mention.id}-${index}`} className={`chat-mention ${mention.id===selfId?'is-self':''}`}>{part}</span>;
+    if(/^(?:https?:\/\/|www\.)/iu.test(part)){
+      const trailing=part.match(/[.,!?،؛)\]}>]+$/u)?.[0]||'';
+      const token=trailing?part.slice(0,-trailing.length):part;
+      const href=/^www\./iu.test(token)?`https://${token}`:token;
+      let label=token;
+      try{const url=new URL(href);label=`${url.hostname.replace(/^www\./,'')}${url.pathname==='/'?'':url.pathname}`;}catch{}
+      return <span key={`u-${index}`} className="chat-link-wrap"><a className="chat-link" href={href} target="_blank" rel="noopener noreferrer nofollow" title={href}><Icon name="link" size={12}/><span>{label}</span></a>{trailing}</span>;
+    }
+    return part;
   });
 }
+
 
 function preferredVoiceMime(){
   if(typeof MediaRecorder==='undefined')return '';
@@ -158,7 +179,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
   const voiceRecorderRef=useRef(null), voiceStreamRef=useRef(null), voiceChunksRef=useRef([]), voiceStartAtRef=useRef(0), voiceTimerRef=useRef(null), voiceAutoStopRef=useRef(null), voiceHoldRef=useRef(false), voiceCancelRef=useRef(false), voiceStartXRef=useRef(0);
   const pendingImageUrlRef=useRef(''), reportedSeenRef=useRef(new Set());
   const ignoringRemote = useRef(false), chatOpenRef = useRef(false), pendingPlaybackRef = useRef(null), clockOffsetRef = useRef(0), clockReadyRef = useRef(false);
-  const fullscreenIdleTimerRef = useRef(null), desktopIdleTimerRef=useRef(null), volumeHoverCloseRef=useRef(null), presenceTimerRef=useRef(null), controlsVisibleRef = useRef(true), swallowedStageTapRef = useRef(false), viewportBaseHeightRef = useRef(0), viewportOrientationRef = useRef(''), controlsBlockerRef=useRef(false);
+  const fullscreenIdleTimerRef = useRef(null), desktopIdleTimerRef=useRef(null), volumeHoverCloseRef=useRef(null), presenceTimerRef=useRef(null), playbackFlashTimerRef=useRef(null), controlsVisibleRef = useRef(true), swallowedStageTapRef = useRef(false), viewportBaseHeightRef = useRef(0), viewportOrientationRef = useRef(''), controlsBlockerRef=useRef(false);
   const typingIdleTimerRef=useRef(null), lastTypingEmitRef=useRef(0), typingTimersRef=useRef(new Map()), joinPasswordRef=useRef(''), joinRoomRef=useRef(null), qualityModeRef=useRef('auto');
   const [selfId,setSelfId]=useState('');
   const [room,setRoom]=useState({hostId:null,videoUrl:'',originalUrl:'',provider:'direct',videoTitle:'',qualityMode:'auto',qualityOptions:[],playback:{playing:false,time:0,rate:1},members:[],roles:[],videoSuggestions:[],passwordProtected:false,messages:[]});
@@ -179,7 +200,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
   const [showRoomSecurity,setShowRoomSecurity]=useState(false), [roomPassword,setRoomPassword]=useState(''), [savingPassword,setSavingPassword]=useState(false);
   const [memberActionTarget,setMemberActionTarget]=useState(null), [memberActionBusy,setMemberActionBusy]=useState(false);
   const [replyTo,setReplyTo]=useState(null), [mentionState,setMentionState]=useState(null), [selectedMentionIds,setSelectedMentionIds]=useState([]), [mentionIndex,setMentionIndex]=useState(0), [sendingMessage,setSendingMessage]=useState(false);
-  const [playing,setPlaying]=useState(false), [currentTime,setCurrentTime]=useState(0), [duration,setDuration]=useState(0), [volume,setVolume]=useState(1), [muted,setMuted]=useState(false), [rate,setRate]=useState(1), [detectedQuality,setDetectedQuality]=useState(0);
+  const [playing,setPlaying]=useState(false), [currentTime,setCurrentTime]=useState(0), [duration,setDuration]=useState(0), [volume,setVolume]=useState(1), [muted,setMuted]=useState(false), [rate,setRate]=useState(1), [detectedQuality,setDetectedQuality]=useState(0), [playbackFlash,setPlaybackFlash]=useState('');
   const isHost=Boolean(selfId&&room.hostId===selfId);
   const selfMember=(room.members||[]).find(member=>member.id===selfId);
   const isAdmin=Boolean(selfMember?.isAdmin);
@@ -200,6 +221,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
   const isiOS=useMemo(()=>typeof navigator!=='undefined'&&/iPad|iPhone|iPod/.test(navigator.userAgent),[]);
 
   const showNotice=useCallback((text)=>{ setNotice(text); clearTimeout(showNotice.timer); showNotice.timer=setTimeout(()=>setNotice(''),2400); },[]);
+  const flashPlaybackState=useCallback((type)=>{clearTimeout(playbackFlashTimerRef.current);setPlaybackFlash(type);playbackFlashTimerRef.current=setTimeout(()=>setPlaybackFlash(''),720);},[]);
   const applyRemotePlayback=useCallback(async(playback)=>{
     const video=videoRef.current;
     if(!video||!playback)return;
@@ -475,6 +497,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     socket.on('chat:message',(msg)=>{setRoom(prev=>({...prev,messages:[...prev.messages,msg].slice(-150)}));if(!chatOpenRef.current)setUnread(n=>n+1);});
     socket.on('chat:seen',(payload)=>{const ids=new Set(payload?.ids||[]);if(!ids.size)return;setRoom(prev=>({...prev,messages:(prev.messages||[]).map(msg=>ids.has(msg.id)?{...msg,seen:true}:msg)}));});
     socket.on('chat:prune',(payload)=>{const ids=new Set(payload?.ids||[]);if(!ids.size)return;setRoom(prev=>({...prev,messages:(prev.messages||[]).filter(msg=>!ids.has(msg.id))}));});
+    socket.on('chat:deleted',(payload)=>{const id=String(payload?.id||'');if(!id)return;reportedSeenRef.current.delete(id);setRoom(prev=>({...prev,messages:(prev.messages||[]).filter(msg=>msg.id!==id)}));});
     socket.on('chat:typing',(payload)=>{
       const id=String(payload?.senderId||'');
       if(!id||id===socket.id)return;
@@ -498,7 +521,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     socket.on('video:suggestion:new',(suggestion)=>{showNotice(`${suggestion?.senderName||'یک نفر'} یک فیلم پیشنهاد داد`);});
 
     const clockTimer=setInterval(()=>{if(socket.connected)calibrateClock(1)},15000);
-    return()=>{disposed=true;clearInterval(clockTimer);clearTimeout(desktopIdleTimerRef.current);clearTimeout(volumeHoverCloseRef.current);clearTimeout(presenceTimerRef.current);clearTimeout(typingIdleTimerRef.current);clearTimeout(timelineLongPressRef.current.timer);clearTimeout(previewSeekTimerRef.current);clearInterval(voiceTimerRef.current);clearTimeout(voiceAutoStopRef.current);try{if(voiceRecorderRef.current&&voiceRecorderRef.current.state!=='inactive'){voiceCancelRef.current=true;voiceRecorderRef.current.stop();}}catch{};voiceStreamRef.current?.getTracks?.().forEach(track=>track.stop());if(pendingImageUrlRef.current)URL.revokeObjectURL(pendingImageUrlRef.current);for(const timer of typingTimersRef.current.values())clearTimeout(timer);typingTimersRef.current.clear();joinRoomRef.current=null;socket.emit('chat:typing',{typing:false});socket.emit('room:leave');socket.disconnect();};
+    return()=>{disposed=true;clearInterval(clockTimer);clearTimeout(desktopIdleTimerRef.current);clearTimeout(volumeHoverCloseRef.current);clearTimeout(presenceTimerRef.current);clearTimeout(playbackFlashTimerRef.current);clearTimeout(typingIdleTimerRef.current);clearTimeout(timelineLongPressRef.current.timer);clearTimeout(previewSeekTimerRef.current);clearInterval(voiceTimerRef.current);clearTimeout(voiceAutoStopRef.current);try{if(voiceRecorderRef.current&&voiceRecorderRef.current.state!=='inactive'){voiceCancelRef.current=true;voiceRecorderRef.current.stop();}}catch{};voiceStreamRef.current?.getTracks?.().forEach(track=>track.stop());if(pendingImageUrlRef.current)URL.revokeObjectURL(pendingImageUrlRef.current);for(const timer of typingTimersRef.current.values())clearTimeout(timer);typingTimersRef.current.clear();joinRoomRef.current=null;socket.emit('chat:typing',{typing:false});socket.emit('room:leave');socket.disconnect();};
   },[roomId,initialName,applyRemotePlayback,showNotice]);
 
   useEffect(()=>{
@@ -513,7 +536,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     if(!video)return;
     const hlsSource=isHlsUrl(room.videoUrl);
     if(hlsSource&&Hls.isSupported()){
-      const hls=new Hls({enableWorker:true,lowLatencyMode:false});hlsRef.current=hls;hls.loadSource(room.videoUrl);hls.attachMedia(video);
+      const hls=new Hls({enableWorker:true,lowLatencyMode:false,maxBufferLength:30,maxMaxBufferLength:60,backBufferLength:30,maxBufferSize:48*1024*1024,startFragPrefetch:false});hlsRef.current=hls;hls.loadSource(room.videoUrl);hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED,()=>{
         const options=normalizedQualityOptions((hls.levels||[]).map(level=>level?.height));
         if(isHost&&options.length)socketRef.current?.emit('room:report-quality-options',{options});
@@ -538,10 +561,10 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     try{video.pause();video.removeAttribute('src');video.load?.();}catch{}
     const applyPending=()=>{const target=Math.max(0,previewSeekPendingRef.current||0);try{if(Number.isFinite(video.duration)&&video.duration>0)video.currentTime=Math.min(target,Math.max(0,video.duration-.05));else video.currentTime=target;}catch{}};
     if(isHlsUrl(room.videoUrl)&&Hls.isSupported()){
-      const previewHls=new Hls({enableWorker:true,lowLatencyMode:false,maxBufferLength:8,maxMaxBufferLength:16});
+      const previewHls=new Hls({enableWorker:true,lowLatencyMode:false,maxBufferLength:2,maxMaxBufferLength:4,backBufferLength:0,maxBufferSize:3*1024*1024,startLevel:0});
       timelinePreviewHlsRef.current=previewHls;
       previewHls.loadSource(room.videoUrl);previewHls.attachMedia(video);
-      previewHls.on(Hls.Events.MANIFEST_PARSED,applyPending);
+      previewHls.on(Hls.Events.MANIFEST_PARSED,()=>{if(previewHls.levels?.length){previewHls.currentLevel=0;previewHls.nextLevel=0;previewHls.loadLevel=0;}applyPending();});
     }else{
       video.src=room.videoUrl;video.load();
       video.addEventListener('loadedmetadata',applyPending,{once:true});
@@ -582,7 +605,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     const timer=setInterval(()=>{
       const v=videoRef.current;
       if(v&&!v.paused)emitPlaybackSnapshot();
-    },750);
+    },1000);
     return()=>clearInterval(timer);
   },[isHost,connected,room.videoUrl,emitPlaybackSnapshot]);
 
@@ -615,12 +638,15 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     if(!canModerate||!room.videoUrl)return;
     socketRef.current?.emit('room:set-quality',{mode},result=>{
       if(result?.ok){
-        const label=mode==='high'?'کیفیت بالا':mode==='low'?'کیفیت کم‌مصرف':'کیفیت خودکار';
+        const numeric=Number(String(mode).replace(/p$/,''));
+        const label=mode==='auto'?'کیفیت خودکار':Number.isFinite(numeric)&&numeric>0?`${Math.round(numeric)}p`:'کیفیت انتخابی';
         showNotice(`${label} برای اتاق تنظیم شد`);
       }else showNotice('تغییر کیفیت انجام نشد');
     });
   }
   function onTimeUpdate(){const v=videoRef.current;if(!v)return;setCurrentTime(v.currentTime);setPlaying(!v.paused);}
+  function handleVideoPlay(){setPlaying(true);flashPlaybackState('play');if(isHost)broadcastPlayback();}
+  function handleVideoPause(){setPlaying(false);flashPlaybackState('pause');if(isHost)broadcastPlayback();}
   function togglePlay(){const v=videoRef.current;if(!v||!isHost)return;v.paused?v.play().catch(()=>{}):v.pause();}
   function sendPlaybackRequest(action){
     if(isHost||requestCooldownLeft>0)return;
@@ -655,8 +681,8 @@ export default function WatchRoom({ roomId, initialName = '' }) {
       if(preview&&preview.readyState>=1){try{const next=previewSeekPendingRef.current;preview.currentTime=Number.isFinite(preview.duration)&&preview.duration>0?Math.min(next,Math.max(0,preview.duration-.05)):next;}catch{}}
     };
     const elapsed=Date.now()-previewLastSeekAtRef.current;
-    if(elapsed>=90){clearTimeout(previewSeekTimerRef.current);apply();}
-    else {clearTimeout(previewSeekTimerRef.current);previewSeekTimerRef.current=setTimeout(apply,90-elapsed);}
+    if(elapsed>=160){clearTimeout(previewSeekTimerRef.current);apply();}
+    else {clearTimeout(previewSeekTimerRef.current);previewSeekTimerRef.current=setTimeout(apply,160-elapsed);}
   }
   function updateTimelinePreview(clientX,visible=true){
     const wrap=timelineWrapRef.current;
@@ -844,7 +870,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     if(!file||uploadingImage)return;
     const imageType=imageMimeFromFile(file);
     if(!imageType){showNotice('فرمت تصویر شناخته نشد');return;}
-    if(file.size>CHAT_IMAGE_MAX_BYTES){showNotice('حداکثر حجم تصویر ۵ مگابایت است');return;}
+    if(file.size>CHAT_IMAGE_MAX_BYTES){showNotice('حداکثر حجم تصویر ۳ مگابایت است');return;}
     if(pendingImageUrlRef.current)URL.revokeObjectURL(pendingImageUrlRef.current);
     const previewUrl=URL.createObjectURL(file);pendingImageUrlRef.current=previewUrl;
     setPendingImage({file,previewUrl,imageType});setImageCaption('');setShowImageSource(false);setShowEmojiTray(false);
@@ -859,7 +885,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
       socket.emit('chat:image',{name:file.name||'image',type:imageType,size:file.size,data,caption:imageCaption.trim(),replyToId:replyTo?.id||''},result=>{
         setUploadingImage(false);
         if(result?.ok){showNotice('تصویر ارسال شد');setShowEmojiTray(false);setReplyTo(null);clearPendingImage();}
-        else if(result?.error==='image-too-large')showNotice('حداکثر حجم تصویر ۵ مگابایت است');
+        else if(result?.error==='image-too-large')showNotice('حداکثر حجم تصویر ۳ مگابایت است');
         else if(result?.error==='rate-limit')showNotice('چند ثانیه بعد دوباره امتحان کن');
         else showNotice('ارسال تصویر انجام نشد');
       });
@@ -1052,6 +1078,14 @@ export default function WatchRoom({ roomId, initialName = '' }) {
       else showNotice('حذف ذخیره انجام نشد');
     });
   }
+  function deleteChatMessage(message){
+    if(!canModerate||!message?.id)return;
+    socketRef.current?.emit('chat:delete',{messageId:message.id},result=>{
+      if(result?.ok)showNotice('پیام حذف شد');
+      else if(result?.error==='forbidden')showNotice('اجازه حذف این پیام را نداری');
+      else showNotice('حذف پیام انجام نشد');
+    });
+  }
   function closeFloating(){setShowMembers(false);setShowReactions(false);setShowVolume(false);setShowQuality(false);setShowPlaybackRequest(false);}
   function closeChat(){stopTyping();setChatOpen(false);setShowEmojiTray(false);setShowImageSource(false);setMentionState(null);}
   function openChat(){closeFloating();const desktopCinema=typeof window!=='undefined'&&window.innerWidth>920&&window.matchMedia?.('(hover:hover) and (pointer:fine)').matches;if(fullscreenActive&&desktopCinema){setFullscreenChatCollapsed(false);setUnread(0);return;}setChatOpen(true);setUnread(0);}
@@ -1100,7 +1134,8 @@ export default function WatchRoom({ roomId, initialName = '' }) {
       }
       const target=e.target;
       const interactive=target?.closest?.('input,textarea,select,button,[contenteditable="true"],.chat-panel,.floating-panel,.modal-backdrop');
-      if((e.key==='f'||e.key==='F')&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&!interactive&&room.videoUrl){e.preventDefault();toggleFullscreen();return;}
+      const fullscreenShortcut=e.code==='KeyF'||e.key==='f'||e.key==='F'||e.key==='ب';
+      if(fullscreenShortcut&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&!interactive&&room.videoUrl){e.preventDefault();toggleFullscreen();return;}
       if(e.key!=='ArrowRight'&&e.key!=='ArrowLeft')return;
       if(interactive)return;
       if(!isHost||!room.videoUrl||!videoRef.current)return;
@@ -1132,14 +1167,15 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     {floatingOpen&&<button type="button" className="dismiss-layer" onClick={closeFloating} aria-label="بستن پنجره باز"/>}
 
     {showMembers&&<div className="members-popover floating-panel"><div className="popover-head"><div><b>اعضای اتاق</b><small>{isHost?'رول و مدیریت اعضا':isAdmin?'رول خودت و مدیریت اعضای عادی':'برای خودت رول بساز یا اعضای آنلاین را ببین'}</small></div><button onClick={()=>setShowMembers(false)}><Icon name="close"/></button></div>{room.members.map(m=>{const role=roleMap.get(m.roleId);const roleName=role?.name||'';const isNew=Date.now()-(m.joinedAt||0)<180000;const canManageMember=(isHost&&m.id!==selfId)||(isAdmin&&m.id!==selfId&&m.id!==room.hostId&&!m.isAdmin);const canManageRole=isHost||m.id===selfId;return <div className="member-row" key={m.id}><span className={`member-avatar ${m.isAdmin?'admin-avatar':''}`}><Icon name={m.id===room.hostId?'crown':m.isAdmin?'shield':'user'} size={17}/></span><div className="member-main"><b>{m.id===selfId?'شما':m.name}</b><div className="member-badges">{m.id===room.hostId&&<small className="system-badge host-label">میزبان</small>}{m.isAdmin&&<small className="system-badge admin-label">مدیر</small>}{m.id===selfId&&<small className="system-badge self-label">شما</small>}{isNew&&m.id!==selfId&&<small className="system-badge new-label">جدید</small>}{roleName&&<span className="member-role-badge" style={{'--role-color':role?.color||'#6c8cff'}}>{role?.emoji&&<span className="role-emoji">{role.emoji}</span>}{roleName}</span>}</div></div>{canManageRole&&<button type="button" className="role-manage-btn" onClick={()=>openRoleManager(m)} aria-label={m.id===selfId?'تنظیم رول خودم':`تنظیم رول ${m.name}`}><Icon name="tag" size={14}/><span>{roleName?'تغییر':'رول'}</span></button>}{canManageMember&&<button type="button" className="member-more-btn" onClick={()=>openMemberActions(m)} aria-label={`مدیریت ${m.name}`}><Icon name="more" size={17}/></button>}</div>})}</div>}
-    {showQuality&&canModerate&&room.videoUrl&&<div className="quality-popover floating-panel" onClick={e=>e.stopPropagation()}><div className="quality-popover-head"><div><b>کیفیت پخش اتاق</b><small>{qualityOptions.length>1?`کیفیت‌های تشخیص‌داده‌شده: ${qualityMin}p تا ${qualityMax}p`:qualityOptions.length===1?`منبع فعلی: ${qualityLabel(qualityOptions[0])}`:'در حال تشخیص کیفیت منبع'}</small></div><span className="quality-current">{detectedQuality?qualityLabel(detectedQuality):'—'}</span></div><div className="quality-mode-buttons"><button type="button" className={qualityMode==='auto'?'active':''} onClick={()=>setRoomQuality('auto')}><b>خودکار</b><small>تعادل کیفیت و اتصال</small></button><button type="button" className={qualityMode==='low'?'active':''} onClick={()=>setRoomQuality('low')}><b>کم</b><small>{qualityMin?qualityLabel(qualityMin):'کم‌مصرف'}</small></button><button type="button" className={qualityMode==='high'?'active':''} onClick={()=>setRoomQuality('high')}><b>بالا</b><small>{qualityMax?qualityLabel(qualityMax):'بیشترین موجود'}</small></button></div><p>این انتخاب برای همه افراد اتاق از سمت سرور Sync می‌شود. اگر منبع فقط یک کیفیت داشته باشد، همان کیفیت پخش می‌شود.</p></div>}
+    {showQuality&&canModerate&&room.videoUrl&&<div className="quality-popover floating-panel" onClick={e=>e.stopPropagation()}><div className="quality-popover-head"><div><b>کیفیت پخش اتاق</b><small>{qualityOptions.length>1?`${qualityOptions.length} کیفیت واقعی از منبع تشخیص داده شد`:qualityOptions.length===1?`منبع فعلی: ${qualityLabel(qualityOptions[0])}`:'این منبع کیفیت قابل انتخاب جداگانه اعلام نکرده'}</small></div><span className="quality-current">{detectedQuality?qualityLabel(detectedQuality):'—'}</span></div><div className="quality-mode-buttons quality-resolution-grid"><button type="button" className={qualityMode==='auto'?'active':''} onClick={()=>setRoomQuality('auto')}><b>Auto</b><small>تطبیقی</small></button>{[...qualityOptions].sort((a,b)=>b-a).map(option=><button type="button" key={option} className={(String(qualityMode)===String(option)||(qualityMode==='high'&&option===qualityMax)||(qualityMode==='low'&&option===qualityMin))?'active':''} onClick={()=>setRoomQuality(String(option))}><b>{qualityLabel(option)}</b><small>{detectedQuality===option?'در حال پخش':'انتخاب کیفیت'}</small></button>)}</div><p>فقط کیفیت‌هایی نمایش داده می‌شوند که واقعاً در منبع وجود دارند. در HLS انتخاب Resolution روی Level همان کیفیت قفل می‌شود و Auto دوباره پخش تطبیقی را فعال می‌کند.</p></div>}
 
 
     <div className="watch-grid">
       <section className="cinema-panel">
         <div className="video-stage" id="video-stage" onPointerDown={stagePointerDown} onPointerEnter={e=>{if(e.pointerType==='mouse'){revealDesktopControls();if(fullscreenActive)revealFullscreenControls()}}} onPointerMove={e=>{if(e.pointerType==='mouse'){revealDesktopControls();if(fullscreenActive)revealFullscreenControls()}}} onClick={stageClick}>
-          {room.videoUrl?<video ref={videoRef} playsInline preload="metadata" onLoadedMetadata={handleLoadedMetadata} onDurationChange={e=>setDuration(e.currentTarget.duration||0)} onTimeUpdate={onTimeUpdate} onPlay={()=>{setPlaying(true);if(isHost)broadcastPlayback()}} onPause={()=>{setPlaying(false);if(isHost)broadcastPlayback()}} onSeeked={()=>isHost&&broadcastPlayback()} onRateChange={e=>{setRate(e.currentTarget.playbackRate);if(isHost)broadcastPlayback()}} onError={()=>room.videoUrl&&showNotice('این لینک داخل مرورگر قابل پخش نیست؛ لینک مستقیم ویدیو را امتحان کن')}/>:<div className="empty-player"><span className="empty-play"><Icon name="play" size={28}/></span><h2>هنوز فیلمی انتخاب نشده</h2><p>{isHost?'لینک مستقیم، آپارات یا منبع قابل‌پخش را وارد کن.':'منتظر انتخاب فیلم توسط میزبان باش؛ می‌تونی از دکمه لینک، فیلم پیشنهاد بدی.'}</p></div>}
+          {room.videoUrl?<video ref={videoRef} playsInline preload="metadata" onLoadedMetadata={handleLoadedMetadata} onDurationChange={e=>setDuration(e.currentTarget.duration||0)} onTimeUpdate={onTimeUpdate} onPlay={handleVideoPlay} onPause={handleVideoPause} onSeeked={()=>isHost&&broadcastPlayback()} onRateChange={e=>{setRate(e.currentTarget.playbackRate);if(isHost)broadcastPlayback()}} onError={()=>room.videoUrl&&showNotice('این لینک داخل مرورگر قابل پخش نیست؛ لینک مستقیم ویدیو را امتحان کن')}/>:<div className="empty-player"><span className="empty-play"><Icon name="play" size={28}/></span><h2>هنوز فیلمی انتخاب نشده</h2><p>{isHost?'لینک مستقیم، آپارات یا منبع قابل‌پخش را وارد کن.':'منتظر انتخاب فیلم توسط میزبان باش؛ می‌تونی از دکمه لینک، فیلم پیشنهاد بدی.'}</p></div>}
           <div className="reaction-layer" aria-hidden="true">{reactions.map(r=><span key={r.id} className="flying-reaction" style={{left:`${r.lane}%`}}>{r.emoji}</span>)}</div>
+          {playbackFlash&&room.videoUrl&&<div className={`playback-state-flash ${playbackFlash}`} aria-hidden="true"><span><Icon name={playbackFlash==='play'?'play':'pause'} size={34}/></span></div>}
           {!isHost&&room.videoUrl&&<div className="viewer-badge">کنترل زمان با میزبان</div>}
           {needsGesture&&room.videoUrl&&<button className="gesture-overlay" onClick={unlockPlayback}><span><Icon name="play" size={26}/></span><b>برای شروع همزمان لمس کن</b><small>مرورگر اجازهٔ پخش خودکار با صدا نداده است</small></button>}
 
@@ -1167,7 +1203,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
                 <button className="control-btn volume-control-btn" onClick={handleVolumeButton} aria-label={muted?'صدا قطع است':'صدا'} title={showVolume?'کلیک برای قطع/وصل صدا':'تنظیم صدا'}><Icon name={muted||volume===0?'muted':'volume'}/></button>
               </div>
               {isHost&&<button className="rate-control aux-control" onClick={changeRate} aria-label="سرعت پخش">{rate}×</button>}
-              <button className="control-btn" onClick={toggleFullscreen} aria-label="تمام صفحه" title="تمام صفحه (F)"><Icon name="fullscreen"/></button>
+              <button className="control-btn" onClick={toggleFullscreen} aria-label={fullscreenActive?'خروج از تمام صفحه':'تمام صفحه'} title={fullscreenActive?'خروج از تمام صفحه (F / ب)':'تمام صفحه (F / ب)'}><Icon name={fullscreenActive?'fullscreenExit':'fullscreen'}/></button>
             </div>
           </>}
         </div>
@@ -1192,7 +1228,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
             return <article key={msg.id} data-message-id={msg.id} className={`${msg.senderId===selfId?'message mine':'message'} ${msg.isHost?'host-message':''} ${msg.isAdmin?'admin-message':''} ${msg.imageUrl?'image-message':''} ${msg.audioUrl?'voice-message':''} ${msg.replyTo?'reply-message':''} ${mentionsSelf?'mentions-me':''}`}>
               <div className="message-top">
                 <b>{msg.isHost&&<Icon name="crown" size={13}/>} {msg.isAdmin&&<Icon name="shield" size={12}/>}<span>{msg.senderId===selfId?'شما':msg.senderName}</span>{msg.isAdmin&&<span className="chat-system-badge admin">مدیر</span>}{mentionsSelf&&<span className="chat-system-badge mention">تگ شدی</span>}{role&&<span className="chat-role-badge" style={{'--role-color':role.color||'#6c8cff'}}>{role.emoji&&<span className="role-emoji">{role.emoji}</span>}{role.name}</span>}</b>
-                <div className="message-meta">{msg.senderId!==selfId&&<button type="button" className="message-action" onClick={()=>tagMessageSender(msg)} aria-label={`تگ کردن ${msg.senderName}`} title="تگ"><Icon name="tag" size={12}/></button>}<button type="button" className="message-action" onClick={()=>startReply(msg)} aria-label={`پاسخ به ${msg.senderName}`} title="ریپلای"><Icon name="reply" size={13}/></button><time>{formatTime(msg.createdAt)}</time>{msg.senderId===selfId&&<span className={`message-delivery ${msg.seen?'seen':''}`} title={msg.seen?'دیده شد':'ارسال شد'} aria-label={msg.seen?'دیده شد':'ارسال شد'}><Icon name={msg.seen?'doubleCheck':'check'} size={13}/></span>}</div>
+                <div className="message-meta">{msg.senderId!==selfId&&<button type="button" className="message-action" onClick={()=>tagMessageSender(msg)} aria-label={`تگ کردن ${msg.senderName}`} title="تگ"><Icon name="tag" size={12}/></button>}<button type="button" className="message-action" onClick={()=>startReply(msg)} aria-label={`پاسخ به ${msg.senderName}`} title="ریپلای"><Icon name="reply" size={13}/></button>{canModerate&&<button type="button" className="message-action message-delete-action" onClick={()=>deleteChatMessage(msg)} aria-label="حذف پیام" title="حذف پیام"><Icon name="trash" size={12}/></button>}<time>{formatTime(msg.createdAt)}</time>{msg.senderId===selfId&&<span className={`message-delivery ${msg.seen?'seen':''}`} title={msg.seen?'دیده شد':'ارسال شد'} aria-label={msg.seen?'دیده شد':'ارسال شد'}><Icon name={msg.seen?'doubleCheck':'check'} size={13}/></span>}</div>
               </div>
               {msg.replyTo&&<button type="button" className="message-reply-preview" onClick={()=>scrollToReplyTarget(msg.replyTo.id)}><span><Icon name="reply" size={13}/></span><div><b>{msg.replyTo.senderId===selfId?'شما':msg.replyTo.senderName}</b><small>{replyPreviewText(msg.replyTo)}</small></div></button>}
               {msg.audioUrl&&<VoiceMessage src={msg.audioUrl} durationMs={msg.audioDurationMs}/>}
@@ -1211,7 +1247,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
           {voiceRecording&&<div className={`voice-recording-ui ${voiceCancelArmed?'cancel-armed':''}`}><span className="voice-record-dot"/><b>{formatClock(voiceDurationMs/1000)}</b><small>{voiceCancelArmed?'رها کن تا لغو شود':'برای لغو به چپ بکش'}</small><button type="button" onClick={()=>stopVoiceRecording(true)}>لغو</button></div>}
           <button type="button" className={`emoji-toggle ${showEmojiTray?'active':''}`} onClick={()=>{setShowEmojiTray(v=>!v);setShowImageSource(false);setMentionState(null)}} aria-label="ایموجی" disabled={voiceRecording}><Icon name="smile"/></button>
           <button type="button" className={`chat-image-btn ${uploadingImage?'uploading':''}`} onClick={chooseChatImage} disabled={uploadingImage||voiceRecording} aria-label="ارسال تصویر"><Icon name="image" size={18}/></button>
-          <input ref={imageInputRef} className="chat-image-input" type="file" accept="image/*,.heic,.heif,.avif,.tif,.tiff,.bmp,.jfif,.svg" onChange={e=>prepareChatImage(e.target.files?.[0])}/>
+          <input ref={imageInputRef} className="chat-image-input" type="file" accept="image/*,.heic,.heif,.avif,.tif,.tiff,.bmp,.jfif" onChange={e=>prepareChatImage(e.target.files?.[0])}/>
           <input ref={cameraInputRef} className="chat-image-input" type="file" accept="image/*" capture="environment" onChange={e=>prepareChatImage(e.target.files?.[0])}/>
           <input ref={chatInputRef} name="room-chat-message" value={message} onChange={handleMessageChange} onKeyDown={handleChatKeyDown} onClick={e=>updateMentionState(e.currentTarget.value,e.currentTarget.selectionStart??e.currentTarget.value.length)} onFocus={e=>{setShowEmojiTray(false);setShowImageSource(false);updateMentionState(e.currentTarget.value,e.currentTarget.selectionStart??e.currentTarget.value.length);setTimeout(()=>window.visualViewport?.dispatchEvent?.(new Event('resize')),0)}} onBlur={()=>setKeyboardOpen(false)} placeholder={voiceRecording?'در حال ضبط ویس…':uploadingImage?'در حال ارسال تصویر…':'پیام بنویس…'} maxLength={500} autoComplete="off" autoCorrect="off" autoCapitalize="sentences" spellCheck={false} inputMode="text" enterKeyHint="send" aria-autocomplete="list" aria-expanded={Boolean(mentionState&&mentionCandidates.length)} data-lpignore="true" data-1p-ignore="true" data-form-type="other" disabled={voiceRecording}/>
           {message.trim()?<button className="send-btn" aria-label="ارسال" disabled={sendingMessage||voiceRecording}><Icon name="send" size={19}/></button>:<button type="button" className={`chat-voice-btn ${voiceRecording?'recording':''} ${voiceSending?'sending':''}`} aria-label="برای ضبط ویس نگه دار" title="برای ضبط ویس نگه دار" disabled={voiceSending||Boolean(pendingImage)} onPointerDown={startVoiceRecording} onPointerMove={moveVoiceRecording} onPointerUp={finishVoiceRecording} onPointerCancel={()=>stopVoiceRecording(true)}><Icon name="mic" size={18}/></button>}

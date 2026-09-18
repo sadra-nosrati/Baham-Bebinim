@@ -1,6 +1,6 @@
 {
   "name": "baham-bebinim",
-  "version": "3.18.0",
+  "version": "3.19.0",
   "private": true,
   "description": "Baham Bebinim — synced video rooms with realtime chat and reactions",
   "scripts": {

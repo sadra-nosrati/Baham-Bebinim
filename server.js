@@ -17,7 +17,7 @@ const ROLE_LIMIT = 16;
 const VIDEO_SUGGESTION_LIMIT = 20;
 const ADMIN_LIMIT = 3;
 const CHAT_TTL_MS = 60 * 60 * 1000;
-const CHAT_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const CHAT_IMAGE_MAX_BYTES = 3 * 1024 * 1024;
 const CHAT_AUDIO_MAX_BYTES = 8 * 1024 * 1024;
 const CHAT_VOICE_MAX_MS = 5 * 60 * 1000;
 const DATA_HOME = process.env.BAHAM_BEBINIM_DATA_DIR || path.join(process.env.HOME || '/tmp', '.baham-bebinim');
@@ -65,6 +65,7 @@ const configuredProgressMax = Number(process.env.BAHAM_BEBINIM_PROGRESS_MAX || p
 const ROOM_PROGRESS_TTL_MS = (Number.isFinite(configuredProgressTtlDays) ? Math.max(1, Math.min(3650, configuredProgressTtlDays)) : 90) * 24 * 60 * 60 * 1000;
 const ROOM_PROGRESS_MAX = Number.isFinite(configuredProgressMax) ? Math.max(50, Math.min(5000, Math.floor(configuredProgressMax))) : 1000;
 const ROOM_PROGRESS_SNAPSHOT_MS = 5000;
+const ROOM_CRASH_RECOVERY_MS = 15 * 60 * 1000;
 const ROOM_PROGRESS_FLUSH_MS = 10000;
 const savedRoomProgress = new Map();
 const roomProgressSnapshotAt = new Map();
@@ -140,12 +141,13 @@ function cleanRoleColor(value) {
 
 function safeImageType(value, name = '') {
   const type = String(value || '').trim().toLowerCase().slice(0, 100);
-  if (type.startsWith('image/')) return type;
+  const allowed = new Set(['image/jpeg','image/png','image/gif','image/webp','image/avif','image/heic','image/heif','image/bmp','image/tiff','image/x-icon']);
+  if (allowed.has(type)) return type;
   const ext = path.extname(String(name || '')).toLowerCase();
   const byExt = {
     '.jpg':'image/jpeg','.jpeg':'image/jpeg','.jfif':'image/jpeg','.png':'image/png','.gif':'image/gif',
     '.webp':'image/webp','.avif':'image/avif','.heic':'image/heic','.heif':'image/heif','.bmp':'image/bmp',
-    '.tif':'image/tiff','.tiff':'image/tiff','.ico':'image/x-icon','.svg':'image/svg+xml'
+    '.tif':'image/tiff','.tiff':'image/tiff','.ico':'image/x-icon'
   };
   return byExt[ext] || '';
 }
@@ -271,11 +273,21 @@ function extractAparatHash(value) {
   }
 }
 
-const QUALITY_MODES = new Set(['auto', 'low', 'high']);
+const LEGACY_QUALITY_MODES = new Set(['low', 'high']);
 
 function normalizeQualityMode(value) {
-  const mode = String(value || 'auto').toLowerCase();
-  return QUALITY_MODES.has(mode) ? mode : 'auto';
+  const mode = String(value || 'auto').toLowerCase().trim();
+  if (mode === 'auto' || LEGACY_QUALITY_MODES.has(mode)) return mode;
+  const match = mode.match(/^(\d{3,4})p?$/);
+  if (!match) return 'auto';
+  const height = Number(match[1]);
+  return Number.isFinite(height) && height >= 144 && height <= 4320 ? String(height) : 'auto';
+}
+
+function qualityModeHeight(mode) {
+  const normalized = normalizeQualityMode(mode);
+  const height = Number(normalized);
+  return Number.isFinite(height) && height >= 144 && height <= 4320 ? height : 0;
 }
 
 function qualityNumber(item) {
@@ -332,11 +344,15 @@ function pruneSavedProgress(now = Date.now()) {
 function loadSavedProgress() {
   const candidates = [ROOM_PROGRESS_FILE];
   if (LEGACY_ROOM_PROGRESS_FILE !== ROOM_PROGRESS_FILE) candidates.push(LEGACY_ROOM_PROGRESS_FILE);
+  let legacyFormatFound = false;
   for (const candidate of candidates) {
     try {
       const raw = fs.readFileSync(candidate, 'utf8');
       const parsed = JSON.parse(raw);
-      const source = parsed && typeof parsed.rooms === 'object' ? parsed.rooms : parsed;
+      // v3.18 and older persisted room videos even after the room became empty.
+      // Do not import that format into v3.19; personal Saved Videos are separate.
+      if (Number(parsed?.version || 0) < 2) { legacyFormatFound = true; continue; }
+      const source = parsed && typeof parsed.rooms === 'object' ? parsed.rooms : null;
       if (!source || typeof source !== 'object') continue;
       for (const [rawRoomId, value] of Object.entries(source)) {
         const roomId = cleanRoomId(rawRoomId);
@@ -353,6 +369,10 @@ function loadSavedProgress() {
       if (error?.code !== 'ENOENT') console.warn('[room-progress:load]', error?.message || error);
     }
   }
+  if (legacyFormatFound) {
+    roomProgressDirty = true;
+    flushSavedProgressNow();
+  }
 }
 
 function flushSavedProgressNow() {
@@ -362,7 +382,7 @@ function flushSavedProgressNow() {
     const directory = path.dirname(ROOM_PROGRESS_FILE);
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     const roomsObject = Object.fromEntries(savedRoomProgress.entries());
-    const payload = JSON.stringify({ version: 1, savedAt: Date.now(), rooms: roomsObject });
+    const payload = JSON.stringify({ version: 2, savedAt: Date.now(), rooms: roomsObject });
     const tempPath = `${ROOM_PROGRESS_FILE}.${process.pid}.tmp`;
     fs.writeFileSync(tempPath, payload, { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tempPath, ROOM_PROGRESS_FILE);
@@ -664,6 +684,18 @@ function selectQualitySource(sources, mode = 'auto') {
   if (mode === 'low') return withQuality.reduce((best, item) => item.quality < best.quality ? item : best);
   if (mode === 'high') return withQuality.reduce((best, item) => item.quality > best.quality ? item : best);
 
+  const requestedHeight = qualityModeHeight(mode);
+  if (requestedHeight) {
+    const exact = withQuality.find(item => Number(item.quality) === requestedHeight);
+    if (exact) return exact;
+    return withQuality.reduce((best, item) => {
+      const distance = Math.abs(Number(item.quality) - requestedHeight);
+      const bestDistance = Math.abs(Number(best.quality) - requestedHeight);
+      if (distance !== bestDistance) return distance < bestDistance ? item : best;
+      return Number(item.quality) < Number(best.quality) ? item : best;
+    });
+  }
+
   // Auto keeps a balanced 720p target for direct multi-quality sources.
   return withQuality.reduce((best, item) => {
     const score = Math.abs(item.quality - 720) + (item.quality > 1080 ? 500 : 0);
@@ -687,7 +719,7 @@ async function resolveMediaInput(value, qualityMode = 'auto') {
       signal: controller.signal,
       headers: {
         accept: 'application/json,text/plain,*/*',
-        'user-agent': 'BahamBebinim/3.18',
+        'user-agent': 'BahamBebinim/3.19',
         referer: originalUrl,
       },
     });
@@ -737,11 +769,21 @@ function createRoom() {
   };
 }
 
+function recoverableRoomProgress(roomId) {
+  const saved = cleanSavedProgress(savedRoomProgress.get(roomId));
+  if (!saved) return null;
+  if (Date.now() - Number(saved.updatedAt || 0) > ROOM_CRASH_RECOVERY_MS) {
+    forgetRoomProgress(roomId);
+    return null;
+  }
+  return saved;
+}
+
 function getRoom(roomId) {
   if (rooms.has(roomId)) return rooms.get(roomId);
 
   const room = createRoom();
-  const saved = cleanSavedProgress(savedRoomProgress.get(roomId));
+  const saved = recoverableRoomProgress(roomId);
   if (saved) {
     room.videoUrl = saved.videoUrl;
     room.originalUrl = saved.originalUrl;
@@ -883,8 +925,16 @@ function leaveCurrentRoom(io, socket) {
     }, leavingMember.id);
   }
   if (!room.members.size) {
-    // Keep only the movie + last position. Chat/messages and uploaded media stay ephemeral.
-    saveRoomProgress(roomId, room, { force: true, immediate: true });
+    // An empty room must not keep its movie. Personal Saved Videos are stored
+    // separately per browser profile and remain available across rooms.
+    forgetRoomProgress(roomId, true);
+    room.videoUrl = '';
+    room.originalUrl = '';
+    room.provider = 'direct';
+    room.videoTitle = '';
+    room.videoSources = [];
+    room.qualityOptions = [];
+    room.playback = { playing: false, time: 0, rate: 1, updatedAt: Date.now() };
     for (const message of room.messages || []) {
       if (message.imageUrl) deleteChatImage(message.imageUrl);
       if (message.audioUrl) deleteChatAudio(message.audioUrl);
@@ -975,7 +1025,7 @@ app.prepare().then(() => {
     // wss upgrades while preserving Socket.IO reconnect/fallback semantics.
     transports: ['polling'],
     allowUpgrades: false,
-    pingInterval: 20000,
+    pingInterval: 25000,
     pingTimeout: 20000,
     maxHttpBufferSize: 9 * 1024 * 1024,
   });
@@ -1036,7 +1086,7 @@ app.prepare().then(() => {
       roomId = cleanRoomId(roomId);
       if (!roomId) return ack({ ok: false, error: 'invalid-room' });
       const room = rooms.get(roomId);
-      ack({ ok: true, exists: Boolean(room || savedRoomProgress.has(roomId)), passwordRequired: Boolean(room?.passwordDigest) });
+      ack({ ok: true, exists: Boolean(room || recoverableRoomProgress(roomId)), passwordRequired: Boolean(room?.passwordDigest) });
     });
 
     socket.on('room:join', ({ roomId, name, clientKey, password }, ack = () => {}) => {
@@ -1299,6 +1349,11 @@ app.prepare().then(() => {
       if (!room || !isRoomModerator(room, socket)) return ack({ ok: false, error: 'forbidden' });
 
       const qualityMode = normalizeQualityMode(mode);
+      const requestedHeight = qualityModeHeight(qualityMode);
+      const availableQualities = normalizeQualityOptions(room.qualityOptions);
+      if (requestedHeight && availableQualities.length && !availableQualities.includes(requestedHeight)) {
+        return ack({ ok: false, error: 'quality-unavailable', qualityOptions: availableQualities });
+      }
       const playback = currentPlayback(room);
       room.qualityMode = qualityMode;
       room.playback = playback;
@@ -1617,6 +1672,22 @@ app.prepare().then(() => {
       }
       io.to(socket.data.roomId).emit('chat:message', message);
       ack({ ok: true, messageId: message.id, expiresAt: message.expiresAt });
+    });
+
+    socket.on('chat:delete', ({ messageId }, ack = () => {}) => {
+      if (!allowSocketAction(socket, 'chat-delete', 30, 60000)) return ack({ ok: false, error: 'rate-limit' });
+      const roomId = socket.data.roomId;
+      const room = rooms.get(roomId);
+      if (!room || !room.members.has(socket.id)) return ack({ ok: false, error: 'not-in-room' });
+      if (!isRoomModerator(room, socket)) return ack({ ok: false, error: 'forbidden' });
+      const id = cleanMessageId(messageId);
+      const index = room.messages.findIndex(message => message.id === id);
+      if (index < 0) return ack({ ok: false, error: 'not-found' });
+      const [removed] = room.messages.splice(index, 1);
+      if (removed?.imageUrl) deleteChatImage(removed.imageUrl);
+      if (removed?.audioUrl) deleteChatAudio(removed.audioUrl);
+      io.to(roomId).emit('chat:deleted', { id });
+      ack({ ok: true, id });
     });
 
     socket.on('chat:seen', ({ messageIds }, ack = () => {}) => {
