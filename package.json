@@ -1,12 +1,14 @@
 {
   "name": "baham-bebinim",
-  "version": "3.19.0",
+  "version": "3.20.0",
   "private": true,
-  "description": "Baham Bebinim — synced video rooms with realtime chat and reactions",
+  "description": "Baham Bebinim — synchronized watch rooms with realtime chat, media sharing and moderation",
   "scripts": {
     "dev": "node server.js",
     "build": "next build",
-    "start": "node server.js --production"
+    "start": "node server.js --production",
+    "check": "node --check server.js && node --check server/quality.js && node --check server/chunkedImageUploads.js",
+    "verify": "npm run check && npm run build"
   },
   "dependencies": {
     "hls.js": "1.6.13",

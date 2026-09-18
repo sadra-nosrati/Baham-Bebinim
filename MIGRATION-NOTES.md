@@ -236,3 +236,13 @@ UI-only interaction polish. Playback room sync protocol was not changed. Chat sc
 - Desktop source input/settings/delete controls now share one 40px height.
 - Added server-authoritative moderator message deletion, including cleanup of attached temporary media.
 - Chat now linkifies http(s) and www URLs without server-side URL fetching.
+
+## v3.20.0 — reliable uploads, immediate quality, room lifecycle and modular cleanup
+
+- Chat image transport changed from one large Socket.IO packet to bounded 192 KiB chunks.
+- Each upload step has an acknowledgement timeout and explicit error code; upload sessions expire and are aborted on leave/disconnect.
+- Added `room:quality` broadcast so all connected clients apply the selected HLS/direct quality immediately.
+- Added a signed per-socket `pagehide` leave beacon. Normal tab/navigation exits can destroy an empty room immediately instead of waiting for the polling timeout.
+- Empty room video/progress cleanup remains separate from long-lived personal Saved Videos.
+- Extracted quality, chat-media upload and Socket.IO acknowledgement helpers into focused modules.
+- Added `ARCHITECTURE.md` for maintainers.

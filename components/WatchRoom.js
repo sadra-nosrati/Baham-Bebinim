@@ -3,14 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import Hls from 'hls.js';
+import { CHAT_AUDIO_MAX_BYTES, CHAT_IMAGE_MAX_BYTES, CHAT_VOICE_MAX_MS, imageMimeFromFile, imageUploadErrorMessage, sendChunkedChatImage } from '@/lib/chatMedia';
+import { applyHlsQualityMode, isHlsUrl, normalizedQualityOptions, qualityLabel } from '@/lib/mediaQuality';
+import { emitWithAckTimeout } from '@/lib/socketAck';
 
 const REACTIONS = ['😂','😱','❤️','🍿','🔥','😭','👀','👏','🎬','😍'];
 const CHAT_EMOJIS = ['🍿','😂','😱','❤️','🔥','😭','👀','🎬','👏','😎','💀','😡','✨','🙈','😘','💋','😍','💕','💗','💖','😽','😻','🐱','🐈','😺','😸','😹','😿','🌹',':]',':['];
 const ROLE_EMOJIS = ['', '❤️','⭐','🔥','🌙','🎬','🍿','👑','🌸','✨','💞','🎧','😈','💎','⚡','🌊','☕','🚀','🎮','😘','💋','😍','💕','💗','💖','😽','😻','🐱','🐈','😺','😸','😹','😿','🌹'];
 const ROLE_COLORS = ['#ff5c7c','#ff9f43','#ffd166','#54d49a','#4dd0e1','#6c8cff','#b983ff','#f472b6','#7c4dff','#5bd0c5','#ff7a59','#8bd450','#f6a6ff','#7aa2ff'];
-const CHAT_IMAGE_MAX_BYTES = 3 * 1024 * 1024;
-const CHAT_AUDIO_MAX_BYTES = 8 * 1024 * 1024;
-const CHAT_VOICE_MAX_MS = 5 * 60 * 1000;
 
 function Icon({ name, size = 20, strokeWidth = 1.9 }) {
   const common = { width:size, height:size, viewBox:'0 0 24 24', fill:'none', stroke:'currentColor', strokeWidth, strokeLinecap:'round', strokeLinejoin:'round', 'aria-hidden':'true' };
@@ -63,51 +63,12 @@ function formatClock(seconds) {
 }
 function formatTime(ms) { return new Intl.DateTimeFormat('fa-IR',{hour:'2-digit',minute:'2-digit'}).format(new Date(ms)); }
 function displayHost(value) { try { return new URL(value).hostname.replace(/^www\./,''); } catch { return 'لینک ویدیو'; } }
-function isHlsUrl(value) { return /\.m3u8($|\?)/i.test(String(value || '')); }
-function qualityLabel(value) { const n=Number(value); return Number.isFinite(n)&&n>0?`${Math.round(n)}p`:'نامشخص'; }
-function normalizedQualityOptions(values) { return [...new Set((Array.isArray(values)?values:[]).map(Number).filter(n=>Number.isFinite(n)&&n>=144&&n<=4320))].sort((a,b)=>a-b); }
-function applyHlsQualityMode(hls, mode) {
-  if(!hls)return;
-  const levels=Array.isArray(hls.levels)?hls.levels:[];
-  const normalized=String(mode||'auto').toLowerCase();
-  if(normalized==='auto'){hls.currentLevel=-1;hls.nextLevel=-1;hls.loadLevel=-1;return;}
-  const candidates=levels.map((level,index)=>({index,height:Number(level?.height)||0,bitrate:Number(level?.bitrate)||0})).filter(item=>item.height>0);
-  if(!candidates.length)return;
-  let chosen=null;
-  if(normalized==='high'){
-    chosen=candidates.reduce((best,item)=>!best||item.height>best.height||(item.height===best.height&&item.bitrate>best.bitrate)?item:best,null);
-  }else if(normalized==='low'){
-    const minHeight=Math.min(...candidates.map(item=>item.height));
-    chosen=candidates.filter(item=>item.height===minHeight).reduce((best,item)=>!best||item.bitrate>best.bitrate?item:best,null);
-  }else{
-    const requested=Number(normalized.replace(/p$/,''));
-    if(!Number.isFinite(requested)||requested<144)return;
-    const exact=candidates.filter(item=>item.height===requested);
-    if(exact.length)chosen=exact.reduce((best,item)=>!best||item.bitrate>best.bitrate?item:best,null);
-    else chosen=candidates.reduce((best,item)=>{
-      if(!best)return item;
-      const distance=Math.abs(item.height-requested),bestDistance=Math.abs(best.height-requested);
-      if(distance!==bestDistance)return distance<bestDistance?item:best;
-      if(item.height!==best.height)return item.height<best.height?item:best;
-      return item.bitrate>best.bitrate?item:best;
-    },null);
-  }
-  if(chosen){hls.currentLevel=chosen.index;hls.nextLevel=chosen.index;hls.loadLevel=chosen.index;}
-}
-
 function typingLabel(users) {
   const names=(users||[]).map(item=>item.name).filter(Boolean);
   if(!names.length)return '';
   if(names.length===1)return `${names[0]} داره می‌نویسه`;
   if(names.length===2)return `${names[0]} و ${names[1]} دارن می‌نویسن`;
   return `${names[0]} و ${names.length-1} نفر دیگه دارن می‌نویسن`;
-}
-
-function imageMimeFromFile(file){
-  const direct=String(file?.type||'').toLowerCase();
-  if(direct.startsWith('image/')&&direct!=='image/svg+xml')return direct;
-  const ext=String(file?.name||'').toLowerCase().match(/\.[a-z0-9]+$/)?.[0]||'';
-  return ({'.jpg':'image/jpeg','.jpeg':'image/jpeg','.jfif':'image/jpeg','.png':'image/png','.gif':'image/gif','.webp':'image/webp','.avif':'image/avif','.heic':'image/heic','.heif':'image/heif','.bmp':'image/bmp','.tif':'image/tiff','.tiff':'image/tiff','.ico':'image/x-icon'})[ext]||'';
 }
 
 function normalizeRoomCode(value) {
@@ -180,7 +141,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
   const pendingImageUrlRef=useRef(''), reportedSeenRef=useRef(new Set());
   const ignoringRemote = useRef(false), chatOpenRef = useRef(false), pendingPlaybackRef = useRef(null), clockOffsetRef = useRef(0), clockReadyRef = useRef(false);
   const fullscreenIdleTimerRef = useRef(null), desktopIdleTimerRef=useRef(null), volumeHoverCloseRef=useRef(null), presenceTimerRef=useRef(null), playbackFlashTimerRef=useRef(null), controlsVisibleRef = useRef(true), swallowedStageTapRef = useRef(false), viewportBaseHeightRef = useRef(0), viewportOrientationRef = useRef(''), controlsBlockerRef=useRef(false);
-  const typingIdleTimerRef=useRef(null), lastTypingEmitRef=useRef(0), typingTimersRef=useRef(new Map()), joinPasswordRef=useRef(''), joinRoomRef=useRef(null), qualityModeRef=useRef('auto');
+  const typingIdleTimerRef=useRef(null), lastTypingEmitRef=useRef(0), typingTimersRef=useRef(new Map()), joinPasswordRef=useRef(''), joinRoomRef=useRef(null), qualityModeRef=useRef('auto'), leaveTokenRef=useRef(''), uploadInFlightRef=useRef(false);
   const [selfId,setSelfId]=useState('');
   const [room,setRoom]=useState({hostId:null,videoUrl:'',originalUrl:'',provider:'direct',videoTitle:'',qualityMode:'auto',qualityOptions:[],playback:{playing:false,time:0,rate:1},members:[],roles:[],videoSuggestions:[],passwordProtected:false,messages:[]});
   const [message,setMessage]=useState(''), [chatOpen,setChatOpen]=useState(false), [showMembers,setShowMembers]=useState(false), [showEmojiTray,setShowEmojiTray]=useState(false);
@@ -274,7 +235,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
 
   useEffect(()=>{chatOpenRef.current=chatOpen},[chatOpen]);
   useEffect(()=>{controlsBlockerRef.current=Boolean(chatOpen||showMembers||showReactions||showVolume||showQuality||showPlaybackRequest||showSource||showRoomSecurity||showRoleManager||showSavedVideos||showLeaveConfirm||needsGesture);},[chatOpen,showMembers,showReactions,showVolume,showQuality,showPlaybackRequest,showSource,showRoomSecurity,showRoleManager,showLeaveConfirm,showSavedVideos,needsGesture]);
-  useEffect(()=>{qualityModeRef.current=room.qualityMode||'auto';if(hlsRef.current)applyHlsQualityMode(hlsRef.current,qualityModeRef.current)},[room.qualityMode]);
+  useEffect(()=>{qualityModeRef.current=room.qualityMode||'auto';if(hlsRef.current){const applied=applyHlsQualityMode(hlsRef.current,qualityModeRef.current);if(applied?.height)setDetectedQuality(applied.height)}},[room.qualityMode]);
 
   const revealDesktopControls=useCallback(()=>{
     if(typeof window==='undefined')return;
@@ -476,6 +437,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
           setPasswordError('');
           setJoinPassword('');
           setSelfId(result.selfId);
+          leaveTokenRef.current=String(result.leaveToken||'');
           setRoom(result.room);
           setVideoInput(result.room.originalUrl||result.room.videoUrl||'');
           pendingPlaybackRef.current=result.room.playback;
@@ -490,9 +452,16 @@ export default function WatchRoom({ roomId, initialName = '' }) {
 
     socket.on('connect',()=>{setConnected(true);joinRoom();});
     socket.on('server:busy',()=>showNotice('سرور فعلاً ظرفیت اتصال جدید نداره؛ چند لحظه بعد دوباره امتحان کن'));
-    socket.on('disconnect',()=>setConnected(false));
+    socket.on('disconnect',()=>{setConnected(false);uploadInFlightRef.current=false;setUploadingImage(false);setVoiceSending(false);});
     socket.on('room:state',(next)=>{setRoom(next);pendingPlaybackRef.current=next.playback;});
     socket.on('room:video',(data)=>{setRoom(prev=>({...prev,...data}));setVideoInput(data.originalUrl||data.videoUrl);pendingPlaybackRef.current=data.playback;setNeedsGesture(false);});
+    socket.on('room:quality',(data)=>{
+      const mode=String(data?.qualityMode||'auto');
+      qualityModeRef.current=mode;
+      pendingPlaybackRef.current=data?.playback||pendingPlaybackRef.current;
+      setRoom(prev=>({...prev,qualityMode:mode,qualityOptions:data?.qualityOptions||prev.qualityOptions,videoUrl:data?.videoUrl||prev.videoUrl,playback:data?.playback||prev.playback}));
+      if(hlsRef.current){const applied=applyHlsQualityMode(hlsRef.current,mode);if(applied?.height)setDetectedQuality(applied.height);}
+    });
     socket.on('playback:sync',(playback)=>{setRoom(prev=>({...prev,playback}));applyRemotePlayback(playback);});
     socket.on('chat:message',(msg)=>{setRoom(prev=>({...prev,messages:[...prev.messages,msg].slice(-150)}));if(!chatOpenRef.current)setUnread(n=>n+1);});
     socket.on('chat:seen',(payload)=>{const ids=new Set(payload?.ids||[]);if(!ids.size)return;setRoom(prev=>({...prev,messages:(prev.messages||[]).map(msg=>ids.has(msg.id)?{...msg,seen:true}:msg)}));});
@@ -520,8 +489,21 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     socket.on('playback:action-request',(request)=>{setHostPlaybackRequest(request);showNotice(`${request.requesterName} درخواست ${request.action==='pause'?'توقف':'پخش'} فیلم را فرستاد`);});
     socket.on('video:suggestion:new',(suggestion)=>{showNotice(`${suggestion?.senderName||'یک نفر'} یک فیلم پیشنهاد داد`);});
 
+    let leaveBeaconSent=false;
+    const notifyImmediateLeave=()=>{
+      if(leaveBeaconSent||!socket.id||!leaveTokenRef.current)return;
+      leaveBeaconSent=true;
+      const payload=JSON.stringify({roomId:normalizeRoomCode(roomId),socketId:socket.id,leaveToken:leaveTokenRef.current});
+      try{
+        if(navigator.sendBeacon){navigator.sendBeacon('/api/room-leave',new Blob([payload],{type:'application/json'}));return;}
+        fetch('/api/room-leave',{method:'POST',headers:{'content-type':'application/json'},body:payload,keepalive:true}).catch(()=>{});
+      }catch{}
+    };
+    window.addEventListener('pagehide',notifyImmediateLeave);
+    window.addEventListener('beforeunload',notifyImmediateLeave);
+
     const clockTimer=setInterval(()=>{if(socket.connected)calibrateClock(1)},15000);
-    return()=>{disposed=true;clearInterval(clockTimer);clearTimeout(desktopIdleTimerRef.current);clearTimeout(volumeHoverCloseRef.current);clearTimeout(presenceTimerRef.current);clearTimeout(playbackFlashTimerRef.current);clearTimeout(typingIdleTimerRef.current);clearTimeout(timelineLongPressRef.current.timer);clearTimeout(previewSeekTimerRef.current);clearInterval(voiceTimerRef.current);clearTimeout(voiceAutoStopRef.current);try{if(voiceRecorderRef.current&&voiceRecorderRef.current.state!=='inactive'){voiceCancelRef.current=true;voiceRecorderRef.current.stop();}}catch{};voiceStreamRef.current?.getTracks?.().forEach(track=>track.stop());if(pendingImageUrlRef.current)URL.revokeObjectURL(pendingImageUrlRef.current);for(const timer of typingTimersRef.current.values())clearTimeout(timer);typingTimersRef.current.clear();joinRoomRef.current=null;socket.emit('chat:typing',{typing:false});socket.emit('room:leave');socket.disconnect();};
+    return()=>{disposed=true;window.removeEventListener('pagehide',notifyImmediateLeave);window.removeEventListener('beforeunload',notifyImmediateLeave);notifyImmediateLeave();clearInterval(clockTimer);clearTimeout(desktopIdleTimerRef.current);clearTimeout(volumeHoverCloseRef.current);clearTimeout(presenceTimerRef.current);clearTimeout(playbackFlashTimerRef.current);clearTimeout(typingIdleTimerRef.current);clearTimeout(timelineLongPressRef.current.timer);clearTimeout(previewSeekTimerRef.current);clearInterval(voiceTimerRef.current);clearTimeout(voiceAutoStopRef.current);try{if(voiceRecorderRef.current&&voiceRecorderRef.current.state!=='inactive'){voiceCancelRef.current=true;voiceRecorderRef.current.stop();}}catch{};voiceStreamRef.current?.getTracks?.().forEach(track=>track.stop());if(pendingImageUrlRef.current)URL.revokeObjectURL(pendingImageUrlRef.current);for(const timer of typingTimersRef.current.values())clearTimeout(timer);typingTimersRef.current.clear();joinRoomRef.current=null;socket.emit('chat:typing',{typing:false});socket.emit('room:leave');socket.disconnect();leaveTokenRef.current='';};
   },[roomId,initialName,applyRemotePlayback,showNotice]);
 
   useEffect(()=>{
@@ -634,15 +616,21 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     requestSync();
     pendingPlaybackRef.current&&applyRemotePlayback(pendingPlaybackRef.current);
   }
-  function setRoomQuality(mode){
+  async function setRoomQuality(mode){
     if(!canModerate||!room.videoUrl)return;
-    socketRef.current?.emit('room:set-quality',{mode},result=>{
-      if(result?.ok){
-        const numeric=Number(String(mode).replace(/p$/,''));
-        const label=mode==='auto'?'کیفیت خودکار':Number.isFinite(numeric)&&numeric>0?`${Math.round(numeric)}p`:'کیفیت انتخابی';
-        showNotice(`${label} برای اتاق تنظیم شد`);
-      }else showNotice('تغییر کیفیت انجام نشد');
-    });
+    try{
+      const result=await emitWithAckTimeout(socketRef.current,'room:set-quality',{mode},7000);
+      if(!result?.ok){
+        if(result?.error==='quality-unavailable')showNotice('این کیفیت در منبع فعلی وجود ندارد');
+        else showNotice('تغییر کیفیت انجام نشد');
+        return;
+      }
+      qualityModeRef.current=String(result.qualityMode||mode||'auto');
+      if(hlsRef.current){const applied=applyHlsQualityMode(hlsRef.current,qualityModeRef.current);if(applied?.height)setDetectedQuality(applied.height);}
+      const numeric=Number(String(result.qualityMode||mode).replace(/p$/,''));
+      const label=(result.qualityMode||mode)==='auto'?'کیفیت خودکار':Number.isFinite(numeric)&&numeric>0?`${Math.round(numeric)}p`:'کیفیت انتخابی';
+      showNotice(`${label} همان لحظه روی اتاق اعمال شد`);
+    }catch(error){showNotice(error?.code==='timeout'?'تغییر کیفیت پاسخ نگرفت؛ اتصال را بررسی کن':'تغییر کیفیت انجام نشد');}
   }
   function onTimeUpdate(){const v=videoRef.current;if(!v)return;setCurrentTime(v.currentTime);setPlaying(!v.paused);}
   function handleVideoPlay(){setPlaying(true);flashPlaybackState('play');if(isHost)broadcastPlayback();}
@@ -876,20 +864,25 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     setPendingImage({file,previewUrl,imageType});setImageCaption('');setShowImageSource(false);setShowEmojiTray(false);
   }
   async function sendChatImage(){
-    if(!pendingImage?.file||uploadingImage)return;
-    const socket=socketRef.current;if(!socket?.connected){showNotice('اتصال چت برقرار نیست');return;}
+    if(!pendingImage?.file||uploadingImage||uploadInFlightRef.current)return;
+    const socket=socketRef.current;
+    if(!socket?.connected){showNotice('اتصال چت برقرار نیست');return;}
     const file=pendingImage.file, imageType=pendingImage.imageType||imageMimeFromFile(file);
+    if(!imageType){showNotice('فرمت این تصویر پشتیبانی نمی‌شود');return;}
+    if(file.size>CHAT_IMAGE_MAX_BYTES){showNotice('حداکثر حجم تصویر ۳ مگابایت است');return;}
+
+    uploadInFlightRef.current=true;
     setUploadingImage(true);
     try{
-      const data=await file.arrayBuffer();
-      socket.emit('chat:image',{name:file.name||'image',type:imageType,size:file.size,data,caption:imageCaption.trim(),replyToId:replyTo?.id||''},result=>{
-        setUploadingImage(false);
-        if(result?.ok){showNotice('تصویر ارسال شد');setShowEmojiTray(false);setReplyTo(null);clearPendingImage();}
-        else if(result?.error==='image-too-large')showNotice('حداکثر حجم تصویر ۳ مگابایت است');
-        else if(result?.error==='rate-limit')showNotice('چند ثانیه بعد دوباره امتحان کن');
-        else showNotice('ارسال تصویر انجام نشد');
-      });
-    }catch{setUploadingImage(false);showNotice('خواندن تصویر انجام نشد');}
+      await sendChunkedChatImage(socket,{file,imageType,caption:imageCaption.trim(),replyToId:replyTo?.id||''});
+      showNotice('تصویر ارسال شد');
+      setShowEmojiTray(false);setReplyTo(null);clearPendingImage();
+    }catch(error){
+      showNotice(imageUploadErrorMessage(error?.code));
+    }finally{
+      uploadInFlightRef.current=false;
+      setUploadingImage(false);
+    }
   }
   function chooseChatImage(){
     if(uploadingImage||voiceRecording)return;

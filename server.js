@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const next = require('next');
 const { Server } = require('socket.io');
+const { createChunkedImageUploadStore } = require('./server/chunkedImageUploads');
+const { normalizeQualityMode, qualityModeHeight, qualityNumber, normalizeQualityOptions, selectQualitySource } = require('./server/quality');
 
 const dev = process.env.NODE_ENV !== 'production' && !process.argv.includes('--production');
 const hostname = process.env.HOST || '127.0.0.1';
@@ -55,6 +57,12 @@ const MAX_ROOM_MEMBERS = Number.isFinite(configuredMaxRoomMembers) ? Math.max(2,
 const MAX_ACTIVE_ROOMS = Number.isFinite(configuredMaxActiveRooms) ? Math.max(20, Math.min(10000, Math.floor(configuredMaxActiveRooms))) : 1000;
 const CHAT_UPLOAD_MAX_TOTAL_BYTES = (Number.isFinite(configuredUploadBudgetMb) ? Math.max(32, Math.min(4096, configuredUploadBudgetMb)) : 256) * 1024 * 1024;
 let chatUploadBytes = 0;
+const imageUploadStore = createChunkedImageUploadStore({
+  maxFileBytes: CHAT_IMAGE_MAX_BYTES,
+  chunkBytes: 192 * 1024,
+  ttlMs: 45 * 1000,
+  maxReservedBytes: Math.min(CHAT_UPLOAD_MAX_TOTAL_BYTES, 32 * 1024 * 1024),
+});
 
 // Persist only the minimal room resume state. Chat, uploaded media, members, roles,
 // passwords and moderation state intentionally remain ephemeral.
@@ -93,6 +101,32 @@ function cleanText(value) {
 }
 function cleanMessageId(value) {
   return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80);
+}
+function safeTokenEquals(left, right) {
+  const a = Buffer.from(String(left || ''));
+  const b = Buffer.from(String(right || ''));
+  return a.length > 0 && a.length === b.length && timingSafeEqual(a, b);
+}
+
+function readSmallJson(req, maxBytes = 4096) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(Object.assign(new Error('payload-too-large'), { code: 'payload-too-large' }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); }
+      catch { reject(Object.assign(new Error('invalid-json'), { code: 'invalid-json' })); }
+    });
+    req.on('error', reject);
+  });
 }
 function buildReplySnapshot(room, replyToId) {
   const id = cleanMessageId(replyToId);
@@ -271,37 +305,6 @@ function extractAparatHash(value) {
   } catch {
     return '';
   }
-}
-
-const LEGACY_QUALITY_MODES = new Set(['low', 'high']);
-
-function normalizeQualityMode(value) {
-  const mode = String(value || 'auto').toLowerCase().trim();
-  if (mode === 'auto' || LEGACY_QUALITY_MODES.has(mode)) return mode;
-  const match = mode.match(/^(\d{3,4})p?$/);
-  if (!match) return 'auto';
-  const height = Number(match[1]);
-  return Number.isFinite(height) && height >= 144 && height <= 4320 ? String(height) : 'auto';
-}
-
-function qualityModeHeight(mode) {
-  const normalized = normalizeQualityMode(mode);
-  const height = Number(normalized);
-  return Number.isFinite(height) && height >= 144 && height <= 4320 ? height : 0;
-}
-
-function qualityNumber(item) {
-  const raw = String(item?.profile || item?.label || item?.quality || item?.height || '');
-  const match = raw.match(/(\d{3,4})/);
-  const quality = match ? Number(match[1]) : 0;
-  return Number.isFinite(quality) && quality >= 144 && quality <= 4320 ? quality : 0;
-}
-
-function normalizeQualityOptions(values) {
-  return [...new Set((Array.isArray(values) ? values : [])
-    .map(value => Number(value))
-    .filter(value => Number.isFinite(value) && value >= 144 && value <= 4320))]
-    .sort((a, b) => a - b);
 }
 
 function cleanSavedProgress(value) {
@@ -674,36 +677,6 @@ function aparatSources(fileLinks) {
   return candidates.sort((a, b) => (a.quality || 99999) - (b.quality || 99999));
 }
 
-function selectQualitySource(sources, mode = 'auto') {
-  const candidates = Array.isArray(sources) ? sources.filter(item => item?.url) : [];
-  if (!candidates.length) return null;
-  const withQuality = candidates.filter(item => Number(item.quality) > 0);
-  if (!withQuality.length) return candidates[0];
-
-  mode = normalizeQualityMode(mode);
-  if (mode === 'low') return withQuality.reduce((best, item) => item.quality < best.quality ? item : best);
-  if (mode === 'high') return withQuality.reduce((best, item) => item.quality > best.quality ? item : best);
-
-  const requestedHeight = qualityModeHeight(mode);
-  if (requestedHeight) {
-    const exact = withQuality.find(item => Number(item.quality) === requestedHeight);
-    if (exact) return exact;
-    return withQuality.reduce((best, item) => {
-      const distance = Math.abs(Number(item.quality) - requestedHeight);
-      const bestDistance = Math.abs(Number(best.quality) - requestedHeight);
-      if (distance !== bestDistance) return distance < bestDistance ? item : best;
-      return Number(item.quality) < Number(best.quality) ? item : best;
-    });
-  }
-
-  // Auto keeps a balanced 720p target for direct multi-quality sources.
-  return withQuality.reduce((best, item) => {
-    const score = Math.abs(item.quality - 720) + (item.quality > 1080 ? 500 : 0);
-    const bestScore = Math.abs(best.quality - 720) + (best.quality > 1080 ? 500 : 0);
-    return score < bestScore ? item : best;
-  });
-}
-
 async function resolveMediaInput(value, qualityMode = 'auto') {
   const originalUrl = validMediaUrl(value);
   if (!originalUrl) return { ok: false, error: 'invalid-url' };
@@ -719,7 +692,7 @@ async function resolveMediaInput(value, qualityMode = 'auto') {
       signal: controller.signal,
       headers: {
         accept: 'application/json,text/plain,*/*',
-        'user-agent': 'BahamBebinim/3.19',
+        'user-agent': 'BahamBebinim/3.20',
         referer: originalUrl,
       },
     });
@@ -894,6 +867,7 @@ function emitRoom(io, roomId, room) {
   io.to(roomId).emit('room:state', publicRoom(room));
 }
 function leaveCurrentRoom(io, socket) {
+  imageUploadStore.abort(socket.id);
   const roomId = socket.data.roomId;
   if (!roomId) return;
   const room = rooms.get(roomId);
@@ -944,15 +918,85 @@ function leaveCurrentRoom(io, socket) {
   } else emitRoom(io, roomId, room);
 }
 
+
+async function persistChatImageMessage(room, socket, { name, mime, buffer, caption, replyToId }) {
+  if (!room || !room.members.has(socket.id)) return { ok: false, error: 'not-in-room' };
+  if (!Buffer.isBuffer(buffer) || !buffer.length) return { ok: false, error: 'invalid-image' };
+  if (buffer.length > CHAT_IMAGE_MAX_BYTES) return { ok: false, error: 'image-too-large', limit: CHAT_IMAGE_MAX_BYTES };
+  if (chatUploadBytes + buffer.length > CHAT_UPLOAD_MAX_TOTAL_BYTES) return { ok: false, error: 'storage-busy' };
+
+  const now = Date.now();
+  fs.mkdirSync(CHAT_UPLOAD_DIR, { recursive: true });
+  const extension = safeImageExtension(name, mime);
+  const filename = `${now}-${randomBytes(8).toString('hex')}${extension}`;
+  const filepath = path.join(CHAT_UPLOAD_DIR, filename);
+
+  try {
+    await fs.promises.writeFile(filepath, buffer, { flag: 'wx', mode: 0o600 });
+    await fs.promises.writeFile(`${filepath}.meta`, mime, { mode: 0o600 });
+    chatUploadBytes += buffer.length;
+  } catch (error) {
+    fs.promises.unlink(filepath).catch(() => {});
+    fs.promises.unlink(`${filepath}.meta`).catch(() => {});
+    console.error('[chat:image]', error?.message || error);
+    return { ok: false, error: 'upload-failed' };
+  }
+
+  const member = room.members.get(socket.id);
+  const replyTo = buildReplySnapshot(room, replyToId);
+  const message = {
+    id: `${now}-${Math.random().toString(36).slice(2, 8)}`,
+    senderId: socket.id,
+    senderName: socket.data.name || 'مهمان',
+    text: cleanText(caption),
+    imageUrl: `${CHAT_UPLOAD_PREFIX}${filename}`,
+    imageType: mime,
+    imageName: String(name || 'image').slice(0, 120),
+    mentions: [],
+    replyTo,
+    seen: false,
+    createdAt: now,
+    expiresAt: now + CHAT_TTL_MS,
+    isHost: room.hostId === socket.id,
+    isAdmin: isRoomAdmin(room, socket),
+    roleId: member?.roleId || null,
+    roleName: roleNameFor(room, member),
+  };
+
+  room.messages.push(message);
+  while (room.messages.length > MESSAGE_LIMIT) {
+    const removed = room.messages.shift();
+    if (removed?.imageUrl) deleteChatImage(removed.imageUrl);
+    if (removed?.audioUrl) deleteChatAudio(removed.audioUrl);
+  }
+  return { ok: true, message };
+}
+
 loadSavedProgress();
 initializeUserSavedVideosStorage();
 
 app.prepare().then(() => {
+  let io = null;
   // Chat is intentionally non-persistent, so any temp media upload left from a previous process is orphaned.
   cleanupUploadDir({ purgeAll: true });
-  const httpServer = createServer((req, res) => {
+  const httpServer = createServer(async (req, res) => {
+    const pathname = req.url?.split('?')[0] || '';
+    if (req.method === 'POST' && pathname === '/api/room-leave') {
+      try {
+        const payload = await readSmallJson(req);
+        const targetSocket = io?.sockets?.sockets?.get(String(payload?.socketId || ''));
+        const roomId = cleanRoomId(payload?.roomId);
+        if (targetSocket && roomId && targetSocket.data.roomId === roomId && safeTokenEquals(targetSocket.data.leaveToken, payload?.leaveToken)) {
+          leaveCurrentRoom(io, targetSocket);
+        }
+        res.statusCode = 204;
+        return res.end();
+      } catch {
+        res.statusCode = 400;
+        return res.end('Bad request');
+      }
+    }
     if (req.method === 'GET' && req.url?.startsWith(CHAT_UPLOAD_PREFIX)) {
-      const pathname = req.url.split('?')[0];
       const filepath = chatImagePathFromUrl(pathname);
       if (!filepath) { res.statusCode = 404; return res.end('Not found'); }
       fs.stat(filepath, (error, stat) => {
@@ -974,7 +1018,6 @@ app.prepare().then(() => {
       return;
     }
     if (req.method === 'GET' && req.url?.startsWith(CHAT_AUDIO_PREFIX)) {
-      const pathname = req.url.split('?')[0];
       const filepath = chatAudioPathFromUrl(pathname);
       if (!filepath) { res.statusCode = 404; return res.end('Not found'); }
       fs.stat(filepath, (error, stat) => {
@@ -1019,7 +1062,7 @@ app.prepare().then(() => {
     }
     handle(req, res);
   });
-  const io = new Server(httpServer, {
+  io = new Server(httpServer, {
     // ParsPack WCDN reliably serves Engine.IO polling for this origin but can reject
     // WebSocket upgrades. Keep production realtime on polling to avoid noisy failed
     // wss upgrades while preserving Socket.IO reconnect/fallback semantics.
@@ -1032,6 +1075,7 @@ app.prepare().then(() => {
 
   const cleanupTimer = setInterval(() => {
     cleanupUploadDir();
+    imageUploadStore.cleanupExpired();
     const now = Date.now();
     for (const [roomId, room] of rooms) {
       const removedIds = pruneRoomMessages(room, now);
@@ -1107,6 +1151,7 @@ app.prepare().then(() => {
       socket.data.roomId = roomId;
       socket.data.name = cleanName(name);
       socket.data.clientKey = cleanClientKey(clientKey) || `socket_${socket.id}`;
+      socket.data.leaveToken = randomBytes(18).toString('hex');
       const savedRoleId = room.roleAssignments.get(socket.data.clientKey) || null;
       room.members.set(socket.id, { id: socket.id, name: socket.data.name, clientKey: socket.data.clientKey, roleId: room.roles.has(savedRoleId) ? savedRoleId : null, joinedAt: Date.now() });
       if (!room.hostId) {
@@ -1121,7 +1166,7 @@ app.prepare().then(() => {
         createdAt: Date.now(),
       }, socket.id);
 
-      ack({ ok: true, selfId: socket.id, room: publicRoom(room) });
+      ack({ ok: true, selfId: socket.id, leaveToken: socket.data.leaveToken, room: publicRoom(room) });
       emitRoom(io, roomId, room);
 
       if (room.restoreRefreshPending && room.originalUrl) {
@@ -1362,13 +1407,15 @@ app.prepare().then(() => {
       if (selected?.url && selected.url !== room.videoUrl) room.videoUrl = selected.url;
       saveRoomProgress(roomId, room, { force: true });
 
-      emitRoom(io, roomId, room);
-      ack({
-        ok: true,
+      const qualityPayload = {
         qualityMode,
         qualityOptions: normalizeQualityOptions(room.qualityOptions),
         videoUrl: room.videoUrl,
-      });
+        playback: room.playback,
+      };
+      io.to(roomId).emit('room:quality', qualityPayload);
+      emitRoom(io, roomId, room);
+      ack({ ok: true, ...qualityPayload });
     });
 
     socket.on('room:report-quality-options', ({ options }, ack = () => {}) => {
@@ -1559,7 +1606,62 @@ app.prepare().then(() => {
       ack({ ok: true });
     });
 
-    socket.on('chat:image', ({ name, type, size, data, caption, replyToId }, ack = () => {}) => {
+    socket.on('chat:image:start', ({ name, type, size, caption, replyToId }, ack = () => {}) => {
+      const room = rooms.get(socket.data.roomId);
+      if (!room || !room.members.has(socket.id)) return ack({ ok: false, error: 'not-in-room' });
+      const now = Date.now();
+      if (now - socket.data.lastImageAt < 3000) return ack({ ok: false, error: 'rate-limit' });
+
+      const mime = safeImageType(type, name);
+      const declaredSize = Number(size);
+      if (!mime) return ack({ ok: false, error: 'invalid-image-type' });
+      if (!Number.isFinite(declaredSize) || declaredSize <= 0 || declaredSize > CHAT_IMAGE_MAX_BYTES) {
+        return ack({ ok: false, error: 'image-too-large', limit: CHAT_IMAGE_MAX_BYTES });
+      }
+      if (chatUploadBytes + declaredSize > CHAT_UPLOAD_MAX_TOTAL_BYTES) return ack({ ok: false, error: 'storage-busy' });
+
+      const started = imageUploadStore.start(socket.id, {
+        roomId: socket.data.roomId,
+        name: String(name || 'image').slice(0, 120),
+        mime,
+        size: declaredSize,
+        caption: cleanText(caption),
+        replyToId: cleanMessageId(replyToId),
+      });
+      if (started.ok) socket.data.lastImageAt = now;
+      ack(started);
+    });
+
+    socket.on('chat:image:abort', () => {
+      imageUploadStore.abort(socket.id);
+    });
+
+    socket.on('chat:image:chunk', async ({ uploadId, index, data, final }, ack = () => {}) => {
+      const room = rooms.get(socket.data.roomId);
+      if (!room || !room.members.has(socket.id)) {
+        imageUploadStore.abort(socket.id);
+        return ack({ ok: false, error: 'not-in-room' });
+      }
+
+      const chunk = imageUploadStore.append(socket.id, { uploadId, index, data, final });
+      if (!chunk.ok || !chunk.done) return ack(chunk);
+      if (chunk.metadata.roomId !== socket.data.roomId) return ack({ ok: false, error: 'not-in-room' });
+
+      const stored = await persistChatImageMessage(room, socket, {
+        name: chunk.metadata.name,
+        mime: chunk.metadata.mime,
+        buffer: chunk.buffer,
+        caption: chunk.metadata.caption,
+        replyToId: chunk.metadata.replyToId,
+      });
+      if (!stored.ok) return ack(stored);
+      io.to(socket.data.roomId).emit('chat:message', stored.message);
+      ack({ ok: true, done: true, messageId: stored.message.id });
+    });
+
+    // Backward compatibility for older clients. New clients use chunked image upload
+    // so reverse proxies with a 1 MB request-body limit do not stall camera/gallery sends.
+    socket.on('chat:image', async ({ name, type, size, data, caption, replyToId }, ack = () => {}) => {
       const room = rooms.get(socket.data.roomId);
       if (!room || !room.members.has(socket.id)) return ack({ ok: false, error: 'not-in-room' });
       const now = Date.now();
@@ -1572,48 +1674,11 @@ app.prepare().then(() => {
       if (!buffer.length || buffer.length > CHAT_IMAGE_MAX_BYTES || (Number.isFinite(declaredSize) && declaredSize > CHAT_IMAGE_MAX_BYTES)) {
         return ack({ ok: false, error: 'image-too-large', limit: CHAT_IMAGE_MAX_BYTES });
       }
-      if (chatUploadBytes + buffer.length > CHAT_UPLOAD_MAX_TOTAL_BYTES) return ack({ ok: false, error: 'storage-busy' });
       socket.data.lastImageAt = now;
-      fs.mkdirSync(CHAT_UPLOAD_DIR, { recursive: true });
-      const extension = safeImageExtension(name, mime);
-      const filename = `${now}-${randomBytes(8).toString('hex')}${extension}`;
-      const filepath = path.join(CHAT_UPLOAD_DIR, filename);
-      try {
-        fs.writeFileSync(filepath, buffer, { flag: 'wx', mode: 0o600 });
-        fs.writeFileSync(`${filepath}.meta`, mime, { mode: 0o600 });
-        chatUploadBytes += buffer.length;
-      } catch (error) {
-        console.error('[chat:image]', error?.message || error);
-        return ack({ ok: false, error: 'upload-failed' });
-      }
-      const member = room.members.get(socket.id);
-      const replyTo = buildReplySnapshot(room, replyToId);
-      const message = {
-        id: `${now}-${Math.random().toString(36).slice(2, 8)}`,
-        senderId: socket.id,
-        senderName: socket.data.name || 'مهمان',
-        text: cleanText(caption),
-        imageUrl: `${CHAT_UPLOAD_PREFIX}${filename}`,
-        imageType: mime,
-        imageName: String(name || 'image').slice(0, 120),
-        mentions: [],
-        replyTo,
-        seen: false,
-        createdAt: now,
-        expiresAt: now + CHAT_TTL_MS,
-        isHost: room.hostId === socket.id,
-        isAdmin: isRoomAdmin(room, socket),
-        roleId: member?.roleId || null,
-        roleName: roleNameFor(room, member),
-      };
-      room.messages.push(message);
-      while (room.messages.length > MESSAGE_LIMIT) {
-        const removed = room.messages.shift();
-        if (removed?.imageUrl) deleteChatImage(removed.imageUrl);
-        if (removed?.audioUrl) deleteChatAudio(removed.audioUrl);
-      }
-      io.to(socket.data.roomId).emit('chat:message', message);
-      ack({ ok: true, messageId: message.id, expiresAt: message.expiresAt });
+      const stored = await persistChatImageMessage(room, socket, { name, mime, buffer, caption, replyToId });
+      if (!stored.ok) return ack(stored);
+      io.to(socket.data.roomId).emit('chat:message', stored.message);
+      ack({ ok: true, messageId: stored.message.id });
     });
 
     socket.on('chat:voice', ({ type, size, data, durationMs, replyToId }, ack = () => {}) => {
@@ -1794,6 +1859,7 @@ app.prepare().then(() => {
       });
     });
 
+    socket.on('disconnecting', () => leaveCurrentRoom(io, socket));
     socket.on('disconnect', () => leaveCurrentRoom(io, socket));
   });
 

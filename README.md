@@ -74,8 +74,17 @@ Next.js 16.3.3 + React 19.2.8 + Custom Node Server + Socket.IO + HLS.js
 
 ## Version
 
-`3.19.0`
+`3.20.0`
 
+
+## v3.20.0
+
+- ارسال عکس دوربین و گالری به آپلود تکه‌ای تبدیل شد تا محدودیت body در Nginx/CDN باعث گیرکردن ارسال نشود.
+- همه مراحل ارسال عکس timeout و پیام خطای مشخص دارند؛ spinner دیگر بی‌نهایت نمی‌ماند.
+- تغییر کیفیت Host/Admin با event اختصاصی `room:quality` همان لحظه روی کل اتاق اعمال می‌شود.
+- خروج از صفحه با beacon امضاشده به سرور اعلام می‌شود تا Room خالی سریع پاک شود.
+- منطق Quality، Chat Media و Socket acknowledgement به فایل‌های جدا در `lib/` و `server/` منتقل شد.
+- ساختار جدید پروژه در `ARCHITECTURE.md` مستند شده است.
 
 ## v3.19.0
 
