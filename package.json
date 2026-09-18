@@ -1,0 +1,19 @@
+{
+  "name": "video-rooms-next",
+  "version": "3.17.0",
+  "private": true,
+  "description": "Mobile-first watch together app with Next.js and Socket.IO",
+  "scripts": {
+    "dev": "node server.js",
+    "build": "next build",
+    "start": "node server.js --production"
+  },
+  "dependencies": {
+    "hls.js": "^1.6.13",
+    "next": "16.3.3",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "socket.io": "4.8.1",
+    "socket.io-client": "4.8.1"
+  }
+}

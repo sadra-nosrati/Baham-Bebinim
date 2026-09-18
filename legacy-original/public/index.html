@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Rooms - تماشای گروهی با چت</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+
+<body>
+    <div class="app">
+        <!-- Join Screen -->
+        <div id="join-screen" class="screen active">
+            <div class="card">
+                <h1>🎬 اتاق ویدئو گروهی</h1>
+                <p>با دوستانت فیلم ببین و چت کن</p>
+                <div class="form-group">
+                    <input type="text" id="user-name" placeholder="نام تو" maxlength="30">
+                    <input type="text" id="room-id" placeholder="شناسه اتاق (مثلاً: فیلم123)">
+                </div>
+                <button id="join-btn" class="btn-primary">ورود به اتاق</button>
+                <small>نفر اول اتاق، لیدر خواهد شد و کنترل ویدئو را دارد</small>
+            </div>
+        </div>
+
+        <!-- Room Screen -->
+        <div id="room-screen" class="screen">
+            <div class="header">
+                <div class="room-info">
+                    <span class="room-badge">🚪 اتاق: <span id="room-id-display"></span></span>
+                    <span class="user-count">👥 <span id="user-count">0</span> نفر آنلاین</span>
+                    <span id="leader-badge" class="leader-badge" style="display: none;">👑 شما لیدر هستید</span>
+                </div>
+                <button id="leave-btn" class="btn-outline">❌ خروج از اتاق</button>
+            </div>
+
+            <div class="main-content">
+                <div class="users-sidebar">
+                    <h3>👥 اعضای اتاق</h3>
+                    <ul id="users-list"></ul>
+                </div>
+
+                <div class="video-container">
+                    <div id="video-player" class="video-player">
+                        <div class="placeholder">
+                            🎥 لینک ویدئو را وارد کنید
+                        </div>
+                    </div>
+
+                    <div class="controls" id="video-controls">
+                        <input type="text" id="video-url" placeholder="لینک ویدئو (mp4, m3u8, ...)">
+                        <button id="load-video" class="btn-secondary">📁 بارگذاری ویدئو</button>
+                    </div>
+                    <div class="info-text" id="video-info"></div>
+                </div>
+
+                <div class="chat-container">
+                    <div class="chat-header">
+                        <h3>💬 چت اتاق</h3>
+                    </div>
+                    <div id="chat-messages" class="chat-messages"></div>
+                    <div class="chat-input">
+                        <input type="text" id="chat-input" placeholder="پیامت رو بنویس..." maxlength="200">
+                        <button id="send-chat" class="btn-secondary">📨 ارسال</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/client.js"></script>
+</body>
+
+</html>
