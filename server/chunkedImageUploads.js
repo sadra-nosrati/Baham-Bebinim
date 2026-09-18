@@ -1,6 +1,6 @@
 const { randomBytes } = require('crypto');
 
-function createChunkedImageUploadStore({
+function createChunkedUploadStore({
   maxFileBytes,
   chunkBytes = 192 * 1024,
   ttlMs = 45 * 1000,
@@ -87,4 +87,5 @@ function createChunkedImageUploadStore({
   return { start, append, abort, cleanupExpired };
 }
 
-module.exports = { createChunkedImageUploadStore };
+const createChunkedImageUploadStore = createChunkedUploadStore;
+module.exports = { createChunkedUploadStore, createChunkedImageUploadStore };

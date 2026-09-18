@@ -4,7 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const next = require('next');
 const { Server } = require('socket.io');
-const { createChunkedImageUploadStore } = require('./server/chunkedImageUploads');
+const { createChunkedUploadStore } = require('./server/chunkedImageUploads');
+const { detectImageMime, extensionForImageMime, isSupportedImageMime } = require('./server/imageValidation');
 const { normalizeQualityMode, qualityModeHeight, qualityNumber, normalizeQualityOptions, selectQualitySource } = require('./server/quality');
 
 const dev = process.env.NODE_ENV !== 'production' && !process.argv.includes('--production');
@@ -19,7 +20,8 @@ const ROLE_LIMIT = 16;
 const VIDEO_SUGGESTION_LIMIT = 20;
 const ADMIN_LIMIT = 3;
 const CHAT_TTL_MS = 60 * 60 * 1000;
-const CHAT_IMAGE_MAX_BYTES = 3 * 1024 * 1024;
+const CHAT_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const CHAT_ENCRYPTED_IMAGE_MAX_BYTES = CHAT_IMAGE_MAX_BYTES + 64;
 const CHAT_AUDIO_MAX_BYTES = 8 * 1024 * 1024;
 const CHAT_VOICE_MAX_MS = 5 * 60 * 1000;
 const DATA_HOME = process.env.BAHAM_BEBINIM_DATA_DIR || path.join(process.env.HOME || '/tmp', '.baham-bebinim');
@@ -57,10 +59,16 @@ const MAX_ROOM_MEMBERS = Number.isFinite(configuredMaxRoomMembers) ? Math.max(2,
 const MAX_ACTIVE_ROOMS = Number.isFinite(configuredMaxActiveRooms) ? Math.max(20, Math.min(10000, Math.floor(configuredMaxActiveRooms))) : 1000;
 const CHAT_UPLOAD_MAX_TOTAL_BYTES = (Number.isFinite(configuredUploadBudgetMb) ? Math.max(32, Math.min(4096, configuredUploadBudgetMb)) : 256) * 1024 * 1024;
 let chatUploadBytes = 0;
-const imageUploadStore = createChunkedImageUploadStore({
-  maxFileBytes: CHAT_IMAGE_MAX_BYTES,
+const imageUploadStore = createChunkedUploadStore({
+  maxFileBytes: CHAT_ENCRYPTED_IMAGE_MAX_BYTES,
   chunkBytes: 192 * 1024,
   ttlMs: 45 * 1000,
+  maxReservedBytes: Math.min(CHAT_UPLOAD_MAX_TOTAL_BYTES, 32 * 1024 * 1024),
+});
+const voiceUploadStore = createChunkedUploadStore({
+  maxFileBytes: CHAT_AUDIO_MAX_BYTES + 64,
+  chunkBytes: 320 * 1024,
+  ttlMs: 90 * 1000,
   maxReservedBytes: Math.min(CHAT_UPLOAD_MAX_TOTAL_BYTES, 32 * 1024 * 1024),
 });
 
@@ -106,6 +114,28 @@ function safeTokenEquals(left, right) {
   const a = Buffer.from(String(left || ''));
   const b = Buffer.from(String(right || ''));
   return a.length > 0 && a.length === b.length && timingSafeEqual(a, b);
+}
+
+function cleanEncryptedEnvelope(value, maxDataLength = 24000) {
+  if (!value || Number(value.v) !== 1) return null;
+  const iv = String(value.iv || '').trim();
+  const data = String(value.data || '').trim();
+  if (!/^[A-Za-z0-9_-]{16,32}$/.test(iv)) return null;
+  if (!data || data.length > maxDataLength || !/^[A-Za-z0-9_-]+$/.test(data)) return null;
+  return { v: 1, iv, data };
+}
+function cleanMediaCipher(value) {
+  if (!value || Number(value.v) !== 1) return null;
+  const iv = String(value.iv || '').trim();
+  return /^[A-Za-z0-9_-]{16,32}$/.test(iv) ? { v: 1, iv } : null;
+}
+function clearRoomChat(room) {
+  if (!room) return;
+  for (const message of room.messages || []) {
+    if (message.imageUrl) deleteChatImage(message.imageUrl);
+    if (message.audioUrl) deleteChatAudio(message.audioUrl);
+  }
+  room.messages = [];
 }
 
 function readSmallJson(req, maxBytes = 4096) {
@@ -692,7 +722,7 @@ async function resolveMediaInput(value, qualityMode = 'auto') {
       signal: controller.signal,
       headers: {
         accept: 'application/json,text/plain,*/*',
-        'user-agent': 'BahamBebinim/3.20',
+        'user-agent': 'BahamBebinim/3.21',
         referer: originalUrl,
       },
     });
@@ -739,6 +769,8 @@ function createRoom() {
     videoSuggestions: [],
     messages: [],
     passwordDigest: null,
+    privateMode: false,
+    qualityRevision: 0,
   };
 }
 
@@ -804,6 +836,8 @@ function publicRoom(room) {
     roles: [...room.roles.values()],
     videoSuggestions: publicVideoSuggestions(room),
     passwordProtected: Boolean(room.passwordDigest),
+    privateMode: Boolean(room.privateMode),
+    qualityRevision: Number(room.qualityRevision) || 0,
     messages: room.messages,
   };
 }
@@ -868,6 +902,7 @@ function emitRoom(io, roomId, room) {
 }
 function leaveCurrentRoom(io, socket) {
   imageUploadStore.abort(socket.id);
+  voiceUploadStore.abort(socket.id);
   const roomId = socket.data.roomId;
   if (!roomId) return;
   const room = rooms.get(roomId);
@@ -919,21 +954,55 @@ function leaveCurrentRoom(io, socket) {
 }
 
 
-async function persistChatImageMessage(room, socket, { name, mime, buffer, caption, replyToId }) {
+async function persistChatImageMessage(room, socket, {
+  name,
+  mime,
+  buffer,
+  caption,
+  replyToId,
+  encrypted = false,
+  encryptedPayload = null,
+  mediaCipher = null,
+}) {
   if (!room || !room.members.has(socket.id)) return { ok: false, error: 'not-in-room' };
   if (!Buffer.isBuffer(buffer) || !buffer.length) return { ok: false, error: 'invalid-image' };
-  if (buffer.length > CHAT_IMAGE_MAX_BYTES) return { ok: false, error: 'image-too-large', limit: CHAT_IMAGE_MAX_BYTES };
+  const maxBytes = encrypted ? CHAT_ENCRYPTED_IMAGE_MAX_BYTES : CHAT_IMAGE_MAX_BYTES;
+  if (buffer.length > maxBytes) return { ok: false, error: 'image-too-large', limit: CHAT_IMAGE_MAX_BYTES };
   if (chatUploadBytes + buffer.length > CHAT_UPLOAD_MAX_TOTAL_BYTES) return { ok: false, error: 'storage-busy' };
+
+  let storedMime = mime;
+  let storedName = String(name || 'image').slice(0, 120);
+  let extension = '.bin';
+  let cleanEncryptedPayload = null;
+  let cleanCipher = null;
+
+  if (encrypted) {
+    if (!room.privateMode) return { ok: false, error: 'private-mode-disabled' };
+    cleanEncryptedPayload = cleanEncryptedEnvelope(encryptedPayload);
+    cleanCipher = cleanMediaCipher(mediaCipher);
+    if (!cleanEncryptedPayload || !cleanCipher) return { ok: false, error: 'invalid-encrypted-payload' };
+    storedMime = 'application/octet-stream';
+    storedName = 'private-image';
+    extension = '.e2e';
+  } else {
+    if (room.privateMode) return { ok: false, error: 'private-encryption-required' };
+    const detectedMime = detectImageMime(buffer);
+    if (!detectedMime || !isSupportedImageMime(detectedMime)) return { ok: false, error: 'invalid-image-type' };
+    if (mime && detectedMime !== mime && !(detectedMime === 'image/heif' && mime === 'image/heic')) {
+      return { ok: false, error: 'image-type-mismatch' };
+    }
+    storedMime = detectedMime;
+    extension = extensionForImageMime(detectedMime) || '.img';
+  }
 
   const now = Date.now();
   fs.mkdirSync(CHAT_UPLOAD_DIR, { recursive: true });
-  const extension = safeImageExtension(name, mime);
-  const filename = `${now}-${randomBytes(8).toString('hex')}${extension}`;
+  const filename = `${now}-${randomBytes(12).toString('hex')}${extension}`;
   const filepath = path.join(CHAT_UPLOAD_DIR, filename);
 
   try {
     await fs.promises.writeFile(filepath, buffer, { flag: 'wx', mode: 0o600 });
-    await fs.promises.writeFile(`${filepath}.meta`, mime, { mode: 0o600 });
+    await fs.promises.writeFile(`${filepath}.meta`, storedMime, { mode: 0o600 });
     chatUploadBytes += buffer.length;
   } catch (error) {
     fs.promises.unlink(filepath).catch(() => {});
@@ -943,17 +1012,104 @@ async function persistChatImageMessage(room, socket, { name, mime, buffer, capti
   }
 
   const member = room.members.get(socket.id);
-  const replyTo = buildReplySnapshot(room, replyToId);
   const message = {
     id: `${now}-${Math.random().toString(36).slice(2, 8)}`,
     senderId: socket.id,
     senderName: socket.data.name || 'مهمان',
-    text: cleanText(caption),
+    text: encrypted ? '' : cleanText(caption),
     imageUrl: `${CHAT_UPLOAD_PREFIX}${filename}`,
-    imageType: mime,
-    imageName: String(name || 'image').slice(0, 120),
+    imageType: encrypted ? '' : storedMime,
+    imageName: encrypted ? '' : storedName,
     mentions: [],
-    replyTo,
+    replyTo: encrypted ? null : buildReplySnapshot(room, replyToId),
+    privateEncrypted: Boolean(encrypted),
+    encryptedPayload: cleanEncryptedPayload,
+    mediaCipher: cleanCipher,
+    seen: false,
+    createdAt: now,
+    expiresAt: now + CHAT_TTL_MS,
+    isHost: room.hostId === socket.id,
+    isAdmin: isRoomAdmin(room, socket),
+    roleId: member?.roleId || null,
+    roleName: roleNameFor(room, member),
+  };
+
+  room.messages.push(message);
+  while (room.messages.length > MESSAGE_LIMIT) {
+    const removed = room.messages.shift();
+    if (removed?.imageUrl) deleteChatImage(removed.imageUrl);
+    if (removed?.audioUrl) deleteChatAudio(removed.audioUrl);
+  }
+  return { ok: true, message };
+}
+
+async function persistChatVoiceMessage(room, socket, {
+  mime,
+  buffer,
+  durationMs,
+  replyToId,
+  encrypted = false,
+  encryptedPayload = null,
+  mediaCipher = null,
+}) {
+  if (!room || !room.members.has(socket.id)) return { ok: false, error: 'not-in-room' };
+  if (!Buffer.isBuffer(buffer) || !buffer.length) return { ok: false, error: 'invalid-audio' };
+
+  let storedMime = '';
+  let safeDurationMs = 0;
+  let extension = '.audio';
+  let cleanEncryptedPayload = null;
+  let cleanCipher = null;
+
+  if (encrypted) {
+    if (!room.privateMode) return { ok: false, error: 'private-mode-disabled' };
+    if (buffer.length > CHAT_AUDIO_MAX_BYTES + 64) return { ok: false, error: 'audio-too-large', limit: CHAT_AUDIO_MAX_BYTES };
+    cleanEncryptedPayload = cleanEncryptedEnvelope(encryptedPayload);
+    cleanCipher = cleanMediaCipher(mediaCipher);
+    if (!cleanEncryptedPayload || !cleanCipher) return { ok: false, error: 'invalid-encrypted-payload' };
+    storedMime = 'application/octet-stream';
+    extension = '.e2e';
+  } else {
+    if (room.privateMode) return { ok: false, error: 'private-encryption-required' };
+    storedMime = safeAudioType(mime);
+    safeDurationMs = Math.max(0, Math.min(CHAT_VOICE_MAX_MS, Number(durationMs) || 0));
+    if (!storedMime) return { ok: false, error: 'invalid-audio-type' };
+    if (safeDurationMs < 250) return { ok: false, error: 'audio-too-short' };
+    if (buffer.length > CHAT_AUDIO_MAX_BYTES) return { ok: false, error: 'audio-too-large', limit: CHAT_AUDIO_MAX_BYTES };
+    extension = safeAudioExtension(storedMime);
+  }
+
+  if (chatUploadBytes + buffer.length > CHAT_UPLOAD_MAX_TOTAL_BYTES) return { ok: false, error: 'storage-busy' };
+
+  const now = Date.now();
+  fs.mkdirSync(CHAT_UPLOAD_DIR, { recursive: true });
+  const filename = `${now}-${randomBytes(12).toString('hex')}${extension}`;
+  const filepath = path.join(CHAT_UPLOAD_DIR, filename);
+  try {
+    await fs.promises.writeFile(filepath, buffer, { flag: 'wx', mode: 0o600 });
+    await fs.promises.writeFile(`${filepath}.meta`, storedMime, { mode: 0o600 });
+    chatUploadBytes += buffer.length;
+  } catch (error) {
+    fs.promises.unlink(filepath).catch(() => {});
+    fs.promises.unlink(`${filepath}.meta`).catch(() => {});
+    console.error('[chat:voice]', error?.message || error);
+    return { ok: false, error: 'upload-failed' };
+  }
+
+  const member = room.members.get(socket.id);
+  const message = {
+    id: `${now}-${Math.random().toString(36).slice(2, 8)}`,
+    senderId: socket.id,
+    senderName: socket.data.name || 'مهمان',
+    text: '',
+    audioUrl: `${CHAT_AUDIO_PREFIX}${filename}`,
+    audioType: encrypted ? '' : storedMime,
+    audioDurationMs: encrypted ? 0 : safeDurationMs,
+    mentions: [],
+    replyTo: encrypted ? null : buildReplySnapshot(room, replyToId),
+    privateEncrypted: Boolean(encrypted),
+    encryptedPayload: cleanEncryptedPayload,
+    mediaCipher: cleanCipher,
     seen: false,
     createdAt: now,
     expiresAt: now + CHAT_TTL_MS,
@@ -1008,8 +1164,11 @@ app.prepare().then(() => {
         fs.readFile(metaPath, 'utf8', (metaError, mime) => {
           const type = !metaError && safeImageType(mime) ? safeImageType(mime) : 'application/octet-stream';
           res.setHeader('Content-Type', type);
-          res.setHeader('Cache-Control', 'private, max-age=300');
+          res.setHeader('Cache-Control', filepath.endsWith('.e2e') ? 'private, no-store' : 'private, max-age=300');
           res.setHeader('X-Content-Type-Options', 'nosniff');
+          res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+          res.setHeader('Referrer-Policy', 'no-referrer');
+          res.setHeader('X-Robots-Tag', 'noindex, noarchive');
           res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'; img-src 'self' data: blob:");
           res.setHeader('Content-Length', stat.size);
           fs.createReadStream(filepath).pipe(res);
@@ -1028,8 +1187,11 @@ app.prepare().then(() => {
         fs.readFile(`${filepath}.meta`, 'utf8', (metaError, mime) => {
           const type = !metaError && safeAudioType(mime) ? safeAudioType(mime) : 'application/octet-stream';
           res.setHeader('Content-Type', type);
-          res.setHeader('Cache-Control', 'private, max-age=300');
+          res.setHeader('Cache-Control', filepath.endsWith('.e2e') ? 'private, no-store' : 'private, max-age=300');
           res.setHeader('X-Content-Type-Options', 'nosniff');
+          res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+          res.setHeader('Referrer-Policy', 'no-referrer');
+          res.setHeader('X-Robots-Tag', 'noindex, noarchive');
           res.setHeader('Accept-Ranges', 'bytes');
           const range = String(req.headers.range || '');
           const match = range.match(/^bytes=(\d*)-(\d*)$/);
@@ -1076,6 +1238,7 @@ app.prepare().then(() => {
   const cleanupTimer = setInterval(() => {
     cleanupUploadDir();
     imageUploadStore.cleanupExpired();
+    voiceUploadStore.cleanupExpired();
     const now = Date.now();
     for (const [roomId, room] of rooms) {
       const removedIds = pruneRoomMessages(room, now);
@@ -1130,7 +1293,7 @@ app.prepare().then(() => {
       roomId = cleanRoomId(roomId);
       if (!roomId) return ack({ ok: false, error: 'invalid-room' });
       const room = rooms.get(roomId);
-      ack({ ok: true, exists: Boolean(room || recoverableRoomProgress(roomId)), passwordRequired: Boolean(room?.passwordDigest) });
+      ack({ ok: true, exists: Boolean(room || recoverableRoomProgress(roomId)), passwordRequired: Boolean(room?.passwordDigest), privateMode: Boolean(room?.privateMode) });
     });
 
     socket.on('room:join', ({ roomId, name, clientKey, password }, ack = () => {}) => {
@@ -1269,9 +1432,20 @@ app.prepare().then(() => {
       if (!room || room.hostId !== socket.id) return ack({ ok: false, error: 'forbidden' });
       const cleanPassword = cleanRoomPassword(password);
       if (cleanPassword && cleanPassword.length < 4) return ack({ ok: false, error: 'too-short' });
+
+      const nextPrivateMode = Boolean(cleanPassword);
+      const privacyChanged = Boolean(room.privateMode) !== nextPrivateMode;
       room.passwordDigest = cleanPassword ? passwordDigest(cleanPassword) : null;
+      room.privateMode = nextPrivateMode;
+
+      if (privacyChanged) {
+        clearRoomChat(room);
+        io.to(roomId).emit('chat:reset', { reason: nextPrivateMode ? 'private-enabled' : 'private-disabled' });
+      }
+
       emitRoom(io, roomId, room);
-      ack({ ok: true, passwordProtected: Boolean(room.passwordDigest) });
+      io.to(roomId).emit('room:privacy', { privateMode: room.privateMode, passwordProtected: Boolean(room.passwordDigest) });
+      ack({ ok: true, passwordProtected: Boolean(room.passwordDigest), privateMode: room.privateMode });
     });
 
     socket.on('room:set-admin', ({ memberId, admin }, ack = () => {}) => {
@@ -1388,35 +1562,62 @@ app.prepare().then(() => {
     });
 
 
-    socket.on('room:set-quality', ({ mode }, ack = () => {}) => {
+    socket.on('room:set-quality', async ({ mode }, ack = () => {}) => {
       const roomId = socket.data.roomId;
       const room = rooms.get(roomId);
       if (!room || !isRoomModerator(room, socket)) return ack({ ok: false, error: 'forbidden' });
 
       const qualityMode = normalizeQualityMode(mode);
       const requestedHeight = qualityModeHeight(qualityMode);
-      const availableQualities = normalizeQualityOptions(room.qualityOptions);
-      if (requestedHeight && availableQualities.length && !availableQualities.includes(requestedHeight)) {
-        return ack({ ok: false, error: 'quality-unavailable', qualityOptions: availableQualities });
-      }
       const playback = currentPlayback(room);
-      room.qualityMode = qualityMode;
-      room.playback = playback;
 
-      const selected = selectQualitySource(room.videoSources, qualityMode);
-      if (selected?.url && selected.url !== room.videoUrl) room.videoUrl = selected.url;
+      // Build the next media state first and only commit it after every validation
+      // succeeds. A failed provider refresh must never leave the room in a half-
+      // switched quality state.
+      let nextVideoUrl = room.videoUrl;
+      let nextVideoSources = Array.isArray(room.videoSources) ? room.videoSources : [];
+      let nextQualityOptions = normalizeQualityOptions(room.qualityOptions);
+
+      const cachedSelection = selectQualitySource(nextVideoSources, qualityMode);
+      if (cachedSelection?.url && (nextQualityOptions.length || room.provider !== 'aparat')) {
+        // Prefer the already-resolved source list. Quality changes should not wait on
+        // another provider API request when the exact URLs are already in memory.
+        nextVideoUrl = cachedSelection.url;
+      } else if (room.provider === 'aparat' && room.originalUrl) {
+        // Fallback only for old/recovered rooms that do not have cached source data.
+        const refreshed = await resolveMediaInput(room.originalUrl, qualityMode);
+        if (!refreshed?.ok) return ack({ ok: false, error: refreshed?.error || 'quality-resolve-failed' });
+        nextVideoUrl = refreshed.videoUrl;
+        nextVideoSources = refreshed.videoSources || [];
+        nextQualityOptions = normalizeQualityOptions(refreshed.qualityOptions);
+      } else if (cachedSelection?.url) {
+        nextVideoUrl = cachedSelection.url;
+      }
+
+      if (requestedHeight && nextQualityOptions.length && !nextQualityOptions.includes(requestedHeight)) {
+        return ack({ ok: false, error: 'quality-unavailable', qualityOptions: nextQualityOptions });
+      }
+
+      room.qualityMode = qualityMode;
+      room.videoUrl = nextVideoUrl;
+      room.videoSources = nextVideoSources;
+      room.qualityOptions = nextQualityOptions;
+      room.playback = playback;
+      room.qualityRevision = (Number(room.qualityRevision) || 0) + 1;
       saveRoomProgress(roomId, room, { force: true });
 
       const qualityPayload = {
         qualityMode,
-        qualityOptions: normalizeQualityOptions(room.qualityOptions),
+        qualityOptions: nextQualityOptions,
+        qualityRevision: room.qualityRevision,
+        selectedHeight: requestedHeight || 0,
         videoUrl: room.videoUrl,
         playback: room.playback,
       };
       io.to(roomId).emit('room:quality', qualityPayload);
-      emitRoom(io, roomId, room);
       ack({ ok: true, ...qualityPayload });
     });
+
 
     socket.on('room:report-quality-options', ({ options }, ack = () => {}) => {
       const roomId = socket.data.roomId;
@@ -1571,31 +1772,58 @@ app.prepare().then(() => {
       });
     });
 
-    socket.on('chat:send', ({ text, mentionIds, replyToId }, ack = () => {}) => {
+    socket.on('chat:send', ({ text, mentionIds, replyToId, encryptedPayload }, ack = () => {}) => {
       const room = rooms.get(socket.data.roomId);
-      if (!room) return ack({ ok: false });
+      if (!room || !room.members.has(socket.id)) return ack({ ok: false, error: 'not-in-room' });
       const now = Date.now();
       if (now - socket.data.lastMessageAt < 350) return ack({ ok: false, error: 'rate-limit' });
       socket.data.lastMessageAt = now;
-      text = cleanText(text);
-      if (!text) return ack({ ok: false });
-      const mentions = buildMentionSnapshots(room, mentionIds, text);
-      const replyTo = buildReplySnapshot(room, replyToId);
-      const message = {
-        id: `${now}-${Math.random().toString(36).slice(2, 8)}`,
-        senderId: socket.id,
-        senderName: socket.data.name || 'مهمان',
-        text,
-        mentions,
-        replyTo,
-        seen: false,
-        createdAt: now,
-        expiresAt: now + CHAT_TTL_MS,
-        isHost: room.hostId === socket.id,
-        isAdmin: isRoomAdmin(room, socket),
-        roleId: room.members.get(socket.id)?.roleId || null,
-        roleName: roleNameFor(room, room.members.get(socket.id)),
-      };
+
+      const member = room.members.get(socket.id);
+      let message;
+      if (room.privateMode) {
+        const encrypted = cleanEncryptedEnvelope(encryptedPayload);
+        if (!encrypted) return ack({ ok: false, error: 'private-encryption-required' });
+        message = {
+          id: `${now}-${Math.random().toString(36).slice(2, 8)}`,
+          senderId: socket.id,
+          senderName: socket.data.name || 'مهمان',
+          text: '',
+          mentions: [],
+          replyTo: null,
+          privateEncrypted: true,
+          encryptedPayload: encrypted,
+          seen: false,
+          createdAt: now,
+          expiresAt: now + CHAT_TTL_MS,
+          isHost: room.hostId === socket.id,
+          isAdmin: isRoomAdmin(room, socket),
+          roleId: member?.roleId || null,
+          roleName: roleNameFor(room, member),
+        };
+      } else {
+        text = cleanText(text);
+        if (!text) return ack({ ok: false, error: 'empty-message' });
+        const mentions = buildMentionSnapshots(room, mentionIds, text);
+        const replyTo = buildReplySnapshot(room, replyToId);
+        message = {
+          id: `${now}-${Math.random().toString(36).slice(2, 8)}`,
+          senderId: socket.id,
+          senderName: socket.data.name || 'مهمان',
+          text,
+          mentions,
+          replyTo,
+          privateEncrypted: false,
+          seen: false,
+          createdAt: now,
+          expiresAt: now + CHAT_TTL_MS,
+          isHost: room.hostId === socket.id,
+          isAdmin: isRoomAdmin(room, socket),
+          roleId: member?.roleId || null,
+          roleName: roleNameFor(room, member),
+        };
+      }
+
       room.messages.push(message);
       while (room.messages.length > MESSAGE_LIMIT) {
         const removed = room.messages.shift();
@@ -1603,30 +1831,53 @@ app.prepare().then(() => {
         if (removed?.audioUrl) deleteChatAudio(removed.audioUrl);
       }
       io.to(socket.data.roomId).emit('chat:message', message);
-      ack({ ok: true });
+      ack({ ok: true, messageId: message.id });
     });
 
-    socket.on('chat:image:start', ({ name, type, size, caption, replyToId }, ack = () => {}) => {
+    socket.on('chat:image:start', ({ name, type, size, caption, replyToId, encrypted, encryptedPayload, mediaCipher }, ack = () => {}) => {
       const room = rooms.get(socket.data.roomId);
       if (!room || !room.members.has(socket.id)) return ack({ ok: false, error: 'not-in-room' });
       const now = Date.now();
       if (now - socket.data.lastImageAt < 3000) return ack({ ok: false, error: 'rate-limit' });
 
-      const mime = safeImageType(type, name);
       const declaredSize = Number(size);
-      if (!mime) return ack({ ok: false, error: 'invalid-image-type' });
-      if (!Number.isFinite(declaredSize) || declaredSize <= 0 || declaredSize > CHAT_IMAGE_MAX_BYTES) {
-        return ack({ ok: false, error: 'image-too-large', limit: CHAT_IMAGE_MAX_BYTES });
+      const privateUpload = Boolean(encrypted);
+
+      if (room.privateMode !== privateUpload) {
+        return ack({ ok: false, error: room.privateMode ? 'private-encryption-required' : 'private-mode-disabled' });
       }
+
+      let mime = '';
+      let cleanEncryptedPayload = null;
+      let cleanCipher = null;
+
+      if (privateUpload) {
+        cleanEncryptedPayload = cleanEncryptedEnvelope(encryptedPayload);
+        cleanCipher = cleanMediaCipher(mediaCipher);
+        if (!cleanEncryptedPayload || !cleanCipher) return ack({ ok: false, error: 'invalid-encrypted-payload' });
+        if (!Number.isFinite(declaredSize) || declaredSize <= 16 || declaredSize > CHAT_ENCRYPTED_IMAGE_MAX_BYTES) {
+          return ack({ ok: false, error: 'image-too-large', limit: CHAT_IMAGE_MAX_BYTES });
+        }
+      } else {
+        mime = safeImageType(type, name);
+        if (!mime || !isSupportedImageMime(mime)) return ack({ ok: false, error: 'invalid-image-type' });
+        if (!Number.isFinite(declaredSize) || declaredSize <= 0 || declaredSize > CHAT_IMAGE_MAX_BYTES) {
+          return ack({ ok: false, error: 'image-too-large', limit: CHAT_IMAGE_MAX_BYTES });
+        }
+      }
+
       if (chatUploadBytes + declaredSize > CHAT_UPLOAD_MAX_TOTAL_BYTES) return ack({ ok: false, error: 'storage-busy' });
 
       const started = imageUploadStore.start(socket.id, {
         roomId: socket.data.roomId,
-        name: String(name || 'image').slice(0, 120),
-        mime,
+        name: privateUpload ? 'private-image.bin' : String(name || 'image').slice(0, 120),
+        mime: privateUpload ? 'application/octet-stream' : mime,
         size: declaredSize,
-        caption: cleanText(caption),
-        replyToId: cleanMessageId(replyToId),
+        caption: privateUpload ? '' : cleanText(caption),
+        replyToId: privateUpload ? '' : cleanMessageId(replyToId),
+        encrypted: privateUpload,
+        encryptedPayload: cleanEncryptedPayload,
+        mediaCipher: cleanCipher,
       });
       if (started.ok) socket.data.lastImageAt = now;
       ack(started);
@@ -1653,22 +1904,26 @@ app.prepare().then(() => {
         buffer: chunk.buffer,
         caption: chunk.metadata.caption,
         replyToId: chunk.metadata.replyToId,
+        encrypted: Boolean(chunk.metadata.encrypted),
+        encryptedPayload: chunk.metadata.encryptedPayload,
+        mediaCipher: chunk.metadata.mediaCipher,
       });
       if (!stored.ok) return ack(stored);
       io.to(socket.data.roomId).emit('chat:message', stored.message);
       ack({ ok: true, done: true, messageId: stored.message.id });
     });
 
-    // Backward compatibility for older clients. New clients use chunked image upload
-    // so reverse proxies with a 1 MB request-body limit do not stall camera/gallery sends.
+    // Backward compatibility: public rooms only. Private rooms require the chunked
+    // encrypted path so plaintext never reaches the server.
     socket.on('chat:image', async ({ name, type, size, data, caption, replyToId }, ack = () => {}) => {
       const room = rooms.get(socket.data.roomId);
       if (!room || !room.members.has(socket.id)) return ack({ ok: false, error: 'not-in-room' });
+      if (room.privateMode) return ack({ ok: false, error: 'private-encryption-required' });
       const now = Date.now();
       if (now - socket.data.lastImageAt < 3000) return ack({ ok: false, error: 'rate-limit' });
       const mime = safeImageType(type, name);
       const declaredSize = Number(size);
-      if (!mime) return ack({ ok: false, error: 'invalid-image-type' });
+      if (!mime || !isSupportedImageMime(mime)) return ack({ ok: false, error: 'invalid-image-type' });
       let buffer;
       try { buffer = Buffer.isBuffer(data) ? data : Buffer.from(data); } catch { return ack({ ok: false, error: 'invalid-image' }); }
       if (!buffer.length || buffer.length > CHAT_IMAGE_MAX_BYTES || (Number.isFinite(declaredSize) && declaredSize > CHAT_IMAGE_MAX_BYTES)) {
@@ -1681,9 +1936,91 @@ app.prepare().then(() => {
       ack({ ok: true, messageId: stored.message.id });
     });
 
-    socket.on('chat:voice', ({ type, size, data, durationMs, replyToId }, ack = () => {}) => {
+    socket.on('chat:voice:start', ({ type, size, durationMs, replyToId, encrypted, encryptedPayload, mediaCipher }, ack = () => {}) => {
       const room = rooms.get(socket.data.roomId);
       if (!room || !room.members.has(socket.id)) return ack({ ok: false, error: 'not-in-room' });
+      const now = Date.now();
+      if (now - socket.data.lastVoiceAt < 1200) return ack({ ok: false, error: 'rate-limit' });
+
+      const privateUpload = Boolean(encrypted);
+      if (room.privateMode !== privateUpload) {
+        return ack({ ok: false, error: room.privateMode ? 'private-encryption-required' : 'private-mode-disabled' });
+      }
+
+      const declaredSize = Number(size);
+      let mime = '';
+      let safeDurationMs = 0;
+      let cleanEncryptedPayload = null;
+      let cleanCipher = null;
+
+      if (privateUpload) {
+        cleanEncryptedPayload = cleanEncryptedEnvelope(encryptedPayload);
+        cleanCipher = cleanMediaCipher(mediaCipher);
+        if (!cleanEncryptedPayload || !cleanCipher) return ack({ ok: false, error: 'invalid-encrypted-payload' });
+        if (!Number.isFinite(declaredSize) || declaredSize <= 16 || declaredSize > CHAT_AUDIO_MAX_BYTES + 64) {
+          return ack({ ok: false, error: 'audio-too-large', limit: CHAT_AUDIO_MAX_BYTES });
+        }
+        mime = 'application/octet-stream';
+      } else {
+        mime = safeAudioType(type);
+        safeDurationMs = Math.max(0, Math.min(CHAT_VOICE_MAX_MS, Number(durationMs) || 0));
+        if (!mime) return ack({ ok: false, error: 'invalid-audio-type' });
+        if (safeDurationMs < 250) return ack({ ok: false, error: 'audio-too-short' });
+        if (!Number.isFinite(declaredSize) || declaredSize <= 0 || declaredSize > CHAT_AUDIO_MAX_BYTES) {
+          return ack({ ok: false, error: 'audio-too-large', limit: CHAT_AUDIO_MAX_BYTES });
+        }
+      }
+
+      if (chatUploadBytes + declaredSize > CHAT_UPLOAD_MAX_TOTAL_BYTES) return ack({ ok: false, error: 'storage-busy' });
+      const started = voiceUploadStore.start(socket.id, {
+        roomId: socket.data.roomId,
+        mime,
+        size: declaredSize,
+        durationMs: privateUpload ? 0 : safeDurationMs,
+        replyToId: privateUpload ? '' : cleanMessageId(replyToId),
+        encrypted: privateUpload,
+        encryptedPayload: cleanEncryptedPayload,
+        mediaCipher: cleanCipher,
+      });
+      if (started.ok) socket.data.lastVoiceAt = now;
+      ack(started);
+    });
+
+    socket.on('chat:voice:abort', () => {
+      voiceUploadStore.abort(socket.id);
+    });
+
+    socket.on('chat:voice:chunk', async ({ uploadId, index, data, final }, ack = () => {}) => {
+      const room = rooms.get(socket.data.roomId);
+      if (!room || !room.members.has(socket.id)) {
+        voiceUploadStore.abort(socket.id);
+        return ack({ ok: false, error: 'not-in-room' });
+      }
+
+      const chunk = voiceUploadStore.append(socket.id, { uploadId, index, data, final });
+      if (!chunk.ok || !chunk.done) return ack(chunk);
+      if (chunk.metadata.roomId !== socket.data.roomId) return ack({ ok: false, error: 'not-in-room' });
+
+      const stored = await persistChatVoiceMessage(room, socket, {
+        mime: chunk.metadata.mime,
+        buffer: chunk.buffer,
+        durationMs: chunk.metadata.durationMs,
+        replyToId: chunk.metadata.replyToId,
+        encrypted: Boolean(chunk.metadata.encrypted),
+        encryptedPayload: chunk.metadata.encryptedPayload,
+        mediaCipher: chunk.metadata.mediaCipher,
+      });
+      if (!stored.ok) return ack(stored);
+      io.to(socket.data.roomId).emit('chat:message', stored.message);
+      ack({ ok: true, done: true, messageId: stored.message.id, expiresAt: stored.message.expiresAt });
+    });
+
+    // Backward compatibility for older public clients. Private rooms only accept
+    // the chunked encrypted path so large ciphertext never becomes one polling body.
+    socket.on('chat:voice', async ({ type, size, data, durationMs, replyToId }, ack = () => {}) => {
+      const room = rooms.get(socket.data.roomId);
+      if (!room || !room.members.has(socket.id)) return ack({ ok: false, error: 'not-in-room' });
+      if (room.privateMode) return ack({ ok: false, error: 'private-encryption-required' });
       const now = Date.now();
       if (now - socket.data.lastVoiceAt < 1200) return ack({ ok: false, error: 'rate-limit' });
       const mime = safeAudioType(type);
@@ -1696,47 +2033,11 @@ app.prepare().then(() => {
       if (!buffer.length || buffer.length > CHAT_AUDIO_MAX_BYTES || (Number.isFinite(declaredSize) && declaredSize > CHAT_AUDIO_MAX_BYTES)) {
         return ack({ ok: false, error: 'audio-too-large', limit: CHAT_AUDIO_MAX_BYTES });
       }
-      if (chatUploadBytes + buffer.length > CHAT_UPLOAD_MAX_TOTAL_BYTES) return ack({ ok: false, error: 'storage-busy' });
       socket.data.lastVoiceAt = now;
-      fs.mkdirSync(CHAT_UPLOAD_DIR, { recursive: true });
-      const filename = `${now}-${randomBytes(8).toString('hex')}${safeAudioExtension(mime)}`;
-      const filepath = path.join(CHAT_UPLOAD_DIR, filename);
-      try {
-        fs.writeFileSync(filepath, buffer, { flag: 'wx', mode: 0o600 });
-        fs.writeFileSync(`${filepath}.meta`, mime, { mode: 0o600 });
-        chatUploadBytes += buffer.length;
-      } catch (error) {
-        console.error('[chat:voice]', error?.message || error);
-        return ack({ ok: false, error: 'upload-failed' });
-      }
-      const member = room.members.get(socket.id);
-      const replyTo = buildReplySnapshot(room, replyToId);
-      const message = {
-        id: `${now}-${Math.random().toString(36).slice(2, 8)}`,
-        senderId: socket.id,
-        senderName: socket.data.name || 'مهمان',
-        text: '',
-        audioUrl: `${CHAT_AUDIO_PREFIX}${filename}`,
-        audioType: mime,
-        audioDurationMs: safeDurationMs,
-        mentions: [],
-        replyTo,
-        seen: false,
-        createdAt: now,
-        expiresAt: now + CHAT_TTL_MS,
-        isHost: room.hostId === socket.id,
-        isAdmin: isRoomAdmin(room, socket),
-        roleId: member?.roleId || null,
-        roleName: roleNameFor(room, member),
-      };
-      room.messages.push(message);
-      while (room.messages.length > MESSAGE_LIMIT) {
-        const removed = room.messages.shift();
-        if (removed?.imageUrl) deleteChatImage(removed.imageUrl);
-        if (removed?.audioUrl) deleteChatAudio(removed.audioUrl);
-      }
-      io.to(socket.data.roomId).emit('chat:message', message);
-      ack({ ok: true, messageId: message.id, expiresAt: message.expiresAt });
+      const stored = await persistChatVoiceMessage(room, socket, { mime, buffer, durationMs: safeDurationMs, replyToId });
+      if (!stored.ok) return ack(stored);
+      io.to(socket.data.roomId).emit('chat:message', stored.message);
+      ack({ ok: true, messageId: stored.message.id, expiresAt: stored.message.expiresAt });
     });
 
     socket.on('chat:delete', ({ messageId }, ack = () => {}) => {

@@ -3,9 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import Hls from 'hls.js';
-import { CHAT_AUDIO_MAX_BYTES, CHAT_IMAGE_MAX_BYTES, CHAT_VOICE_MAX_MS, imageMimeFromFile, imageUploadErrorMessage, sendChunkedChatImage } from '@/lib/chatMedia';
+import { CHAT_AUDIO_MAX_BYTES, CHAT_IMAGE_MAX_BYTES, CHAT_VOICE_MAX_MS, detectImageMimeFromFile, imageUploadErrorMessage, sendChunkedChatImage, sendChunkedChatVoice } from '@/lib/chatMedia';
 import { applyHlsQualityMode, isHlsUrl, normalizedQualityOptions, qualityLabel } from '@/lib/mediaQuality';
 import { emitWithAckTimeout } from '@/lib/socketAck';
+import { clearRoomCryptoKey, decryptPrivateJson, encryptPrivateJson, extractRoomCryptoKey, generateRoomCryptoKey, persistRoomCryptoKey, privateInviteUrl, readRoomCryptoKey } from '@/lib/privateRoomCrypto';
+import { EncryptedAudioLoader, EncryptedImage } from '@/components/chat/EncryptedMedia';
+import MediaGallery from '@/components/chat/MediaGallery';
 
 const REACTIONS = ['😂','😱','❤️','🍿','🔥','😭','👀','👏','🎬','😍'];
 const CHAT_EMOJIS = ['🍿','😂','😱','❤️','🔥','😭','👀','🎬','👏','😎','💀','😡','✨','🙈','😘','💋','😍','💕','💗','💖','😽','😻','🐱','🐈','😺','😸','😹','😿','🌹',':]',':['];
@@ -138,17 +141,17 @@ export default function WatchRoom({ roomId, initialName = '' }) {
   const videoRef = useRef(null), hlsRef = useRef(null), socketRef = useRef(null), messagesRef = useRef(null), chatInputRef = useRef(null), imageInputRef = useRef(null), cameraInputRef=useRef(null);
   const timelineWrapRef=useRef(null), timelinePreviewVideoRef=useRef(null), timelinePreviewHlsRef=useRef(null), previewSeekPendingRef=useRef(0), previewSeekTimerRef=useRef(null), previewLastSeekAtRef=useRef(0), timelineLongPressRef=useRef({timer:null,active:false,startX:0});
   const voiceRecorderRef=useRef(null), voiceStreamRef=useRef(null), voiceChunksRef=useRef([]), voiceStartAtRef=useRef(0), voiceTimerRef=useRef(null), voiceAutoStopRef=useRef(null), voiceHoldRef=useRef(false), voiceCancelRef=useRef(false), voiceStartXRef=useRef(0);
-  const pendingImageUrlRef=useRef(''), reportedSeenRef=useRef(new Set());
+  const pendingImageUrlRef=useRef(''), reportedSeenRef=useRef(new Set()), decryptedCacheRef=useRef({}), decryptedKeyRef=useRef('');
   const ignoringRemote = useRef(false), chatOpenRef = useRef(false), pendingPlaybackRef = useRef(null), clockOffsetRef = useRef(0), clockReadyRef = useRef(false);
   const fullscreenIdleTimerRef = useRef(null), desktopIdleTimerRef=useRef(null), volumeHoverCloseRef=useRef(null), presenceTimerRef=useRef(null), playbackFlashTimerRef=useRef(null), controlsVisibleRef = useRef(true), swallowedStageTapRef = useRef(false), viewportBaseHeightRef = useRef(0), viewportOrientationRef = useRef(''), controlsBlockerRef=useRef(false);
-  const typingIdleTimerRef=useRef(null), lastTypingEmitRef=useRef(0), typingTimersRef=useRef(new Map()), joinPasswordRef=useRef(''), joinRoomRef=useRef(null), qualityModeRef=useRef('auto'), leaveTokenRef=useRef(''), uploadInFlightRef=useRef(false);
+  const typingIdleTimerRef=useRef(null), lastTypingEmitRef=useRef(0), typingTimersRef=useRef(new Map()), joinPasswordRef=useRef(''), joinRoomRef=useRef(null), qualityModeRef=useRef('auto'), leaveTokenRef=useRef(''), uploadInFlightRef=useRef(false), privateKeyRef=useRef('');
   const [selfId,setSelfId]=useState('');
-  const [room,setRoom]=useState({hostId:null,videoUrl:'',originalUrl:'',provider:'direct',videoTitle:'',qualityMode:'auto',qualityOptions:[],playback:{playing:false,time:0,rate:1},members:[],roles:[],videoSuggestions:[],passwordProtected:false,messages:[]});
+  const [room,setRoom]=useState({hostId:null,videoUrl:'',originalUrl:'',provider:'direct',videoTitle:'',qualityMode:'auto',qualityOptions:[],playback:{playing:false,time:0,rate:1},members:[],roles:[],videoSuggestions:[],passwordProtected:false,privateMode:false,qualityRevision:0,messages:[]});
   const [message,setMessage]=useState(''), [chatOpen,setChatOpen]=useState(false), [showMembers,setShowMembers]=useState(false), [showEmojiTray,setShowEmojiTray]=useState(false);
   const [showReactions,setShowReactions]=useState(false), [showVolume,setShowVolume]=useState(false), [showQuality,setShowQuality]=useState(false), [showSource,setShowSource]=useState(false), [showLeaveConfirm,setShowLeaveConfirm]=useState(false);
   const [showPlaybackRequest,setShowPlaybackRequest]=useState(false), [requestCooldownUntil,setRequestCooldownUntil]=useState(0), [requestCooldownLeft,setRequestCooldownLeft]=useState(0), [hostPlaybackRequest,setHostPlaybackRequest]=useState(null);
   const [showRoleManager,setShowRoleManager]=useState(false), [roleTarget,setRoleTarget]=useState(null), [newRoleName,setNewRoleName]=useState('');
-  const [showSavedVideos,setShowSavedVideos]=useState(false), [savedVideos,setSavedVideos]=useState([]), [savedVideoBusy,setSavedVideoBusy]=useState(''), [savingProgress,setSavingProgress]=useState(false);
+  const [showSavedVideos,setShowSavedVideos]=useState(false), [savedVideos,setSavedVideos]=useState([]), [savedVideoBusy,setSavedVideoBusy]=useState(''), [savingProgress,setSavingProgress]=useState(false), [showMediaGallery,setShowMediaGallery]=useState(false);
   const [newRoleEmoji,setNewRoleEmoji]=useState('❤️'), [newRoleColor,setNewRoleColor]=useState('#ff5c7c');
   const [videoInput,setVideoInput]=useState(''), [suggestionInput,setSuggestionInput]=useState(''), [resolvingSuggestionId,setResolvingSuggestionId]=useState(''), [connected,setConnected]=useState(false), [reactions,setReactions]=useState([]), [unread,setUnread]=useState(0), [uploadingImage,setUploadingImage]=useState(false);
   const [showImageSource,setShowImageSource]=useState(false), [pendingImage,setPendingImage]=useState(null), [imageCaption,setImageCaption]=useState('');
@@ -158,6 +161,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
   const [needsGesture,setNeedsGesture]=useState(false), [notice,setNotice]=useState(''), [presenceNotice,setPresenceNotice]=useState(null), [resolving,setResolving]=useState(false), [pseudoFullscreen,setPseudoFullscreen]=useState(false);
   const [fullscreenActive,setFullscreenActive]=useState(false), [controlsVisible,setControlsVisible]=useState(true), [desktopControlsVisible,setDesktopControlsVisible]=useState(true), [fullscreenChatCollapsed,setFullscreenChatCollapsed]=useState(false), [keyboardOpen,setKeyboardOpen]=useState(false);
   const [typingUsers,setTypingUsers]=useState([]), [passwordRequired,setPasswordRequired]=useState(false), [joinPassword,setJoinPassword]=useState(''), [passwordError,setPasswordError]=useState('');
+  const [privateKeyString,setPrivateKeyString]=useState(''), [privacyKeyRequired,setPrivacyKeyRequired]=useState(false), [privacyKeyInput,setPrivacyKeyInput]=useState(''), [privacyKeyError,setPrivacyKeyError]=useState(''), [decryptedById,setDecryptedById]=useState({});
   const [showRoomSecurity,setShowRoomSecurity]=useState(false), [roomPassword,setRoomPassword]=useState(''), [savingPassword,setSavingPassword]=useState(false);
   const [memberActionTarget,setMemberActionTarget]=useState(null), [memberActionBusy,setMemberActionBusy]=useState(false);
   const [replyTo,setReplyTo]=useState(null), [mentionState,setMentionState]=useState(null), [selectedMentionIds,setSelectedMentionIds]=useState([]), [mentionIndex,setMentionIndex]=useState(0), [sendingMessage,setSendingMessage]=useState(false);
@@ -166,6 +170,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
   const selfMember=(room.members||[]).find(member=>member.id===selfId);
   const isAdmin=Boolean(selfMember?.isAdmin);
   const canModerate=isHost||isAdmin;
+  const privateMode=Boolean(room.privateMode);
   const roleMap=useMemo(()=>new Map((room.roles||[]).map(role=>[role.id,role])),[room.roles]);
   const mentionCandidates=useMemo(()=>{
     if(!mentionState)return [];
@@ -179,10 +184,90 @@ export default function WatchRoom({ roomId, initialName = '' }) {
   const qualityOptions=normalizedQualityOptions(room.qualityOptions);
   const qualityMode=room.qualityMode||'auto';
   const qualityMin=qualityOptions[0]||0, qualityMax=qualityOptions[qualityOptions.length-1]||0;
+  const chatMediaCount=useMemo(()=> (room.messages||[]).reduce((count,item)=>count+(item.imageUrl||item.audioUrl?1:0),0),[room.messages]);
   const isiOS=useMemo(()=>typeof navigator!=='undefined'&&/iPad|iPhone|iPod/.test(navigator.userAgent),[]);
 
   const showNotice=useCallback((text)=>{ setNotice(text); clearTimeout(showNotice.timer); showNotice.timer=setTimeout(()=>setNotice(''),2400); },[]);
   const flashPlaybackState=useCallback((type)=>{clearTimeout(playbackFlashTimerRef.current);setPlaybackFlash(type);playbackFlashTimerRef.current=setTimeout(()=>setPlaybackFlash(''),720);},[]);
+  const applyPrivateKey=useCallback((value,{updateHash=true}={})=>{
+    const key=extractRoomCryptoKey(value);
+    if(!key)return false;
+    const stored=persistRoomCryptoKey(roomId,key,{updateHash});
+    if(!stored)return false;
+    privateKeyRef.current=stored;
+    setPrivateKeyString(stored);
+    setPrivacyKeyRequired(false);
+    setPrivacyKeyInput('');
+    setPrivacyKeyError('');
+    return true;
+  },[roomId]);
+  const forgetPrivateKey=useCallback(({updateHash=true}={})=>{
+    clearRoomCryptoKey(roomId,{updateHash});
+    privateKeyRef.current='';
+    decryptedKeyRef.current='';
+    decryptedCacheRef.current={};
+    setPrivateKeyString('');
+    setDecryptedById({});
+    setPrivacyKeyRequired(false);
+    setPrivacyKeyInput('');
+    setPrivacyKeyError('');
+  },[roomId]);
+
+  useEffect(()=>{
+    const existing=readRoomCryptoKey(roomId);
+    if(existing){privateKeyRef.current=existing;setPrivateKeyString(existing);}
+  },[roomId]);
+
+  useEffect(()=>{
+    let cancelled=false;
+    const encrypted=(room.messages||[]).filter(msg=>msg.privateEncrypted&&msg.encryptedPayload);
+    const activeIds=new Set(encrypted.map(msg=>msg.id));
+
+    if(!privateKeyString){
+      decryptedKeyRef.current='';
+      decryptedCacheRef.current={};
+      setDecryptedById({});
+      if(privateMode&&encrypted.length)setPrivacyKeyRequired(true);
+      return()=>{cancelled=true};
+    }
+
+    if(decryptedKeyRef.current!==privateKeyString){
+      decryptedKeyRef.current=privateKeyString;
+      decryptedCacheRef.current={};
+    }
+
+    const pruned={};
+    for(const [id,value] of Object.entries(decryptedCacheRef.current)){if(activeIds.has(id))pruned[id]=value;}
+    decryptedCacheRef.current=pruned;
+
+    if(!encrypted.length){setDecryptedById({});return()=>{cancelled=true};}
+    const missing=encrypted.filter(msg=>!Object.prototype.hasOwnProperty.call(pruned,msg.id));
+    if(!missing.length){setDecryptedById({...pruned});return()=>{cancelled=true};}
+
+    Promise.all(missing.map(async msg=>{
+      try{return [msg.id,await decryptPrivateJson(privateKeyString,msg.encryptedPayload)];}
+      catch{return [msg.id,{locked:true}];}
+    })).then(entries=>{
+      if(cancelled||decryptedKeyRef.current!==privateKeyString)return;
+      const next={...decryptedCacheRef.current};
+      for(const [id,value] of entries){if(activeIds.has(id))next[id]=value;}
+      decryptedCacheRef.current=next;
+      setDecryptedById({...next});
+      if(entries.some(([,value])=>value?.locked))setPrivacyKeyRequired(true);
+    });
+    return()=>{cancelled=true};
+  },[room.messages,privateKeyString,privateMode]);
+
+  const contentForMessage=useCallback((msg)=>{
+    if(!msg?.privateEncrypted)return {text:msg?.text||'',mentions:msg?.mentions||[],replyTo:msg?.replyTo||null,image:msg?.imageUrl?{name:msg.imageName||'تصویر',mime:msg.imageType||'image/jpeg'}:null,audio:msg?.audioUrl?{mime:msg.audioType||'audio/webm',durationMs:Number(msg.audioDurationMs)||0}:null};
+    return decryptedById[msg.id]||{locked:true,text:'',mentions:[],replyTo:null};
+  },[decryptedById]);
+
+  function replySnapshotFromMessage(msg){
+    const content=contentForMessage(msg);
+    if(!msg?.id||content?.locked)return null;
+    return {id:msg.id,senderId:msg.senderId,senderName:msg.senderName,text:String(content.text||'').slice(0,160),hasImage:Boolean(msg.imageUrl),imageName:content.image?.name||'',hasAudio:Boolean(msg.audioUrl),audioDurationMs:Number(content.audio?.durationMs)||0};
+  }
   const applyRemotePlayback=useCallback(async(playback)=>{
     const video=videoRef.current;
     if(!video||!playback)return;
@@ -234,7 +319,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
   },[isHost]);
 
   useEffect(()=>{chatOpenRef.current=chatOpen},[chatOpen]);
-  useEffect(()=>{controlsBlockerRef.current=Boolean(chatOpen||showMembers||showReactions||showVolume||showQuality||showPlaybackRequest||showSource||showRoomSecurity||showRoleManager||showSavedVideos||showLeaveConfirm||needsGesture);},[chatOpen,showMembers,showReactions,showVolume,showQuality,showPlaybackRequest,showSource,showRoomSecurity,showRoleManager,showLeaveConfirm,showSavedVideos,needsGesture]);
+  useEffect(()=>{controlsBlockerRef.current=Boolean(chatOpen||showMembers||showReactions||showVolume||showQuality||showPlaybackRequest||showSource||showRoomSecurity||showRoleManager||showSavedVideos||showMediaGallery||privacyKeyRequired||showLeaveConfirm||needsGesture);},[chatOpen,showMembers,showReactions,showVolume,showQuality,showPlaybackRequest,showSource,showRoomSecurity,showRoleManager,showLeaveConfirm,showSavedVideos,showMediaGallery,privacyKeyRequired,needsGesture]);
   useEffect(()=>{qualityModeRef.current=room.qualityMode||'auto';if(hlsRef.current){const applied=applyHlsQualityMode(hlsRef.current,qualityModeRef.current);if(applied?.height)setDetectedQuality(applied.height)}},[room.qualityMode]);
 
   const revealDesktopControls=useCallback(()=>{
@@ -412,6 +497,13 @@ export default function WatchRoom({ roomId, initialName = '' }) {
           setTimeout(()=>{if(!disposed&&socket.connected)joinRoom(passwordValue)},wait);
           return;
         }
+        const localPrivateKey=privateKeyRef.current||readRoomCryptoKey(normalizedRoom);
+        if(localPrivateKey&&!privateKeyRef.current){privateKeyRef.current=localPrivateKey;setPrivateKeyString(localPrivateKey);}
+        if(probe.privateMode&&!localPrivateKey){
+          setPrivacyKeyRequired(true);
+          setPrivacyKeyError('');
+          return;
+        }
         if(probe.passwordRequired&&!passwordValue){
           setPasswordRequired(true);
           setPasswordError('');
@@ -439,6 +531,8 @@ export default function WatchRoom({ roomId, initialName = '' }) {
           setSelfId(result.selfId);
           leaveTokenRef.current=String(result.leaveToken||'');
           setRoom(result.room);
+          if(result.room?.privateMode&&!privateKeyRef.current)setPrivacyKeyRequired(true);
+          else if(!result.room?.privateMode&&privateKeyRef.current)forgetPrivateKey();
           setVideoInput(result.room.originalUrl||result.room.videoUrl||'');
           pendingPlaybackRef.current=result.room.playback;
           socket.emit('saved-video:list',(savedResult)=>{if(!disposed&&savedResult?.ok)setSavedVideos(Array.isArray(savedResult.items)?savedResult.items:[]);});
@@ -453,20 +547,26 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     socket.on('connect',()=>{setConnected(true);joinRoom();});
     socket.on('server:busy',()=>showNotice('سرور فعلاً ظرفیت اتصال جدید نداره؛ چند لحظه بعد دوباره امتحان کن'));
     socket.on('disconnect',()=>{setConnected(false);uploadInFlightRef.current=false;setUploadingImage(false);setVoiceSending(false);});
-    socket.on('room:state',(next)=>{setRoom(next);pendingPlaybackRef.current=next.playback;});
+    socket.on('room:state',(next)=>{setRoom(next);pendingPlaybackRef.current=next.playback;if(next?.privateMode&&!privateKeyRef.current)setPrivacyKeyRequired(true);});
     socket.on('room:video',(data)=>{setRoom(prev=>({...prev,...data}));setVideoInput(data.originalUrl||data.videoUrl);pendingPlaybackRef.current=data.playback;setNeedsGesture(false);});
     socket.on('room:quality',(data)=>{
       const mode=String(data?.qualityMode||'auto');
       qualityModeRef.current=mode;
       pendingPlaybackRef.current=data?.playback||pendingPlaybackRef.current;
-      setRoom(prev=>({...prev,qualityMode:mode,qualityOptions:data?.qualityOptions||prev.qualityOptions,videoUrl:data?.videoUrl||prev.videoUrl,playback:data?.playback||prev.playback}));
-      if(hlsRef.current){const applied=applyHlsQualityMode(hlsRef.current,mode);if(applied?.height)setDetectedQuality(applied.height);}
+      setRoom(prev=>({...prev,qualityMode:mode,qualityOptions:data?.qualityOptions||prev.qualityOptions,qualityRevision:Number(data?.qualityRevision)||prev.qualityRevision||0,videoUrl:data?.videoUrl||prev.videoUrl,playback:data?.playback||prev.playback}));
+      if(hlsRef.current){
+        const applied=applyHlsQualityMode(hlsRef.current,mode);
+        if(applied?.height)setDetectedQuality(applied.height);
+        window.setTimeout(()=>{if(hlsRef.current&&qualityModeRef.current===mode){const confirmed=applyHlsQualityMode(hlsRef.current,mode);if(confirmed?.height)setDetectedQuality(confirmed.height);}},120);
+      }else if(Number(data?.selectedHeight)>0)setDetectedQuality(Number(data.selectedHeight));
     });
     socket.on('playback:sync',(playback)=>{setRoom(prev=>({...prev,playback}));applyRemotePlayback(playback);});
     socket.on('chat:message',(msg)=>{setRoom(prev=>({...prev,messages:[...prev.messages,msg].slice(-150)}));if(!chatOpenRef.current)setUnread(n=>n+1);});
     socket.on('chat:seen',(payload)=>{const ids=new Set(payload?.ids||[]);if(!ids.size)return;setRoom(prev=>({...prev,messages:(prev.messages||[]).map(msg=>ids.has(msg.id)?{...msg,seen:true}:msg)}));});
     socket.on('chat:prune',(payload)=>{const ids=new Set(payload?.ids||[]);if(!ids.size)return;setRoom(prev=>({...prev,messages:(prev.messages||[]).filter(msg=>!ids.has(msg.id))}));});
     socket.on('chat:deleted',(payload)=>{const id=String(payload?.id||'');if(!id)return;reportedSeenRef.current.delete(id);setRoom(prev=>({...prev,messages:(prev.messages||[]).filter(msg=>msg.id!==id)}));});
+    socket.on('chat:reset',()=>{reportedSeenRef.current.clear();decryptedCacheRef.current={};setRoom(prev=>({...prev,messages:[]}));setDecryptedById({});});
+    socket.on('room:privacy',(payload)=>{const enabled=Boolean(payload?.privateMode);setRoom(prev=>({...prev,privateMode:enabled,passwordProtected:Boolean(payload?.passwordProtected)}));if(enabled&&!privateKeyRef.current)setPrivacyKeyRequired(true);else if(!enabled)forgetPrivateKey();});
     socket.on('chat:typing',(payload)=>{
       const id=String(payload?.senderId||'');
       if(!id||id===socket.id)return;
@@ -504,7 +604,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
 
     const clockTimer=setInterval(()=>{if(socket.connected)calibrateClock(1)},15000);
     return()=>{disposed=true;window.removeEventListener('pagehide',notifyImmediateLeave);window.removeEventListener('beforeunload',notifyImmediateLeave);notifyImmediateLeave();clearInterval(clockTimer);clearTimeout(desktopIdleTimerRef.current);clearTimeout(volumeHoverCloseRef.current);clearTimeout(presenceTimerRef.current);clearTimeout(playbackFlashTimerRef.current);clearTimeout(typingIdleTimerRef.current);clearTimeout(timelineLongPressRef.current.timer);clearTimeout(previewSeekTimerRef.current);clearInterval(voiceTimerRef.current);clearTimeout(voiceAutoStopRef.current);try{if(voiceRecorderRef.current&&voiceRecorderRef.current.state!=='inactive'){voiceCancelRef.current=true;voiceRecorderRef.current.stop();}}catch{};voiceStreamRef.current?.getTracks?.().forEach(track=>track.stop());if(pendingImageUrlRef.current)URL.revokeObjectURL(pendingImageUrlRef.current);for(const timer of typingTimersRef.current.values())clearTimeout(timer);typingTimersRef.current.clear();joinRoomRef.current=null;socket.emit('chat:typing',{typing:false});socket.emit('room:leave');socket.disconnect();leaveTokenRef.current='';};
-  },[roomId,initialName,applyRemotePlayback,showNotice]);
+  },[roomId,initialName,applyRemotePlayback,showNotice,forgetPrivateKey]);
 
   useEffect(()=>{
     const video=videoRef.current;
@@ -529,6 +629,10 @@ export default function WatchRoom({ roomId, initialName = '' }) {
         const level=hls.levels?.[Number(data?.level)];
         const height=Number(level?.height)||0;
         if(height)setDetectedQuality(height);
+        const requested=Number(String(qualityModeRef.current||'auto').replace(/p$/i,''));
+        if(Number.isFinite(requested)&&requested>=144&&height&&height!==requested){
+          window.setTimeout(()=>{if(hlsRef.current===hls)applyHlsQualityMode(hls,qualityModeRef.current);},40);
+        }
       });
       hls.on(Hls.Events.ERROR,(_,data)=>{if(data.fatal)showNotice('پخش این لینک HLS با خطا روبه‌رو شد')});
     }else{video.src=room.videoUrl;video.load();}
@@ -626,7 +730,13 @@ export default function WatchRoom({ roomId, initialName = '' }) {
         return;
       }
       qualityModeRef.current=String(result.qualityMode||mode||'auto');
-      if(hlsRef.current){const applied=applyHlsQualityMode(hlsRef.current,qualityModeRef.current);if(applied?.height)setDetectedQuality(applied.height);}
+      setRoom(prev=>({...prev,qualityMode:qualityModeRef.current,qualityOptions:result.qualityOptions||prev.qualityOptions,qualityRevision:Number(result.qualityRevision)||prev.qualityRevision||0,videoUrl:result.videoUrl||prev.videoUrl,playback:result.playback||prev.playback}));
+      if(result.playback)pendingPlaybackRef.current=result.playback;
+      if(hlsRef.current){
+        const applied=applyHlsQualityMode(hlsRef.current,qualityModeRef.current);
+        if(applied?.height)setDetectedQuality(applied.height);
+        window.setTimeout(()=>{if(hlsRef.current){const confirmed=applyHlsQualityMode(hlsRef.current,qualityModeRef.current);if(confirmed?.height)setDetectedQuality(confirmed.height);}},120);
+      }else if(Number(result.selectedHeight)>0)setDetectedQuality(Number(result.selectedHeight));
       const numeric=Number(String(result.qualityMode||mode).replace(/p$/,''));
       const label=(result.qualityMode||mode)==='auto'?'کیفیت خودکار':Number.isFinite(numeric)&&numeric>0?`${Math.round(numeric)}p`:'کیفیت انتخابی';
       showNotice(`${label} همان لحظه روی اتاق اعمال شد`);
@@ -825,7 +935,13 @@ export default function WatchRoom({ roomId, initialName = '' }) {
   }
   function startReply(msg){
     if(!msg?.id)return;
-    setReplyTo({id:msg.id,senderId:msg.senderId,senderName:msg.senderName,text:String(msg.text||'').slice(0,160),hasImage:Boolean(msg.imageUrl),imageName:msg.imageName||'',hasAudio:Boolean(msg.audioUrl),audioDurationMs:Number(msg.audioDurationMs)||0});
+    const snapshot=replySnapshotFromMessage(msg);
+    if(!snapshot){
+      if(msg.privateEncrypted&&!privateKeyRef.current)setPrivacyKeyRequired(true);
+      showNotice('این پیام خصوصی بدون کلید اتاق قابل ریپلای نیست');
+      return;
+    }
+    setReplyTo(snapshot);
     setMentionState(null);
     openChat();
     focusChatInput();
@@ -854,11 +970,11 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     if(imageInputRef.current)imageInputRef.current.value='';
     if(cameraInputRef.current)cameraInputRef.current.value='';
   }
-  function prepareChatImage(file){
+  async function prepareChatImage(file){
     if(!file||uploadingImage)return;
-    const imageType=imageMimeFromFile(file);
-    if(!imageType){showNotice('فرمت تصویر شناخته نشد');return;}
-    if(file.size>CHAT_IMAGE_MAX_BYTES){showNotice('حداکثر حجم تصویر ۳ مگابایت است');return;}
+    if(file.size>CHAT_IMAGE_MAX_BYTES){showNotice('حداکثر حجم تصویر ۵ مگابایت است');return;}
+    const imageType=await detectImageMimeFromFile(file);
+    if(!imageType){showNotice('این فایل تصویر واقعیِ پشتیبانی‌شده نیست');return;}
     if(pendingImageUrlRef.current)URL.revokeObjectURL(pendingImageUrlRef.current);
     const previewUrl=URL.createObjectURL(file);pendingImageUrlRef.current=previewUrl;
     setPendingImage({file,previewUrl,imageType});setImageCaption('');setShowImageSource(false);setShowEmojiTray(false);
@@ -867,14 +983,16 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     if(!pendingImage?.file||uploadingImage||uploadInFlightRef.current)return;
     const socket=socketRef.current;
     if(!socket?.connected){showNotice('اتصال چت برقرار نیست');return;}
-    const file=pendingImage.file, imageType=pendingImage.imageType||imageMimeFromFile(file);
-    if(!imageType){showNotice('فرمت این تصویر پشتیبانی نمی‌شود');return;}
-    if(file.size>CHAT_IMAGE_MAX_BYTES){showNotice('حداکثر حجم تصویر ۳ مگابایت است');return;}
+    const file=pendingImage.file;
+    const imageType=pendingImage.imageType||await detectImageMimeFromFile(file);
+    if(!imageType){showNotice('این فایل تصویر واقعیِ پشتیبانی‌شده نیست');return;}
+    if(file.size>CHAT_IMAGE_MAX_BYTES){showNotice('حداکثر حجم تصویر ۵ مگابایت است');return;}
+    if(privateMode&&!privateKeyRef.current){setPrivacyKeyRequired(true);showNotice('برای ارسال خصوصی، کلید رمزنگاری اتاق لازم است');return;}
 
     uploadInFlightRef.current=true;
     setUploadingImage(true);
     try{
-      await sendChunkedChatImage(socket,{file,imageType,caption:imageCaption.trim(),replyToId:replyTo?.id||''});
+      await sendChunkedChatImage(socket,{file,imageType,caption:imageCaption.trim(),replyTo:replyTo||null,privateMode,privateKey:privateKeyRef.current});
       showNotice('تصویر ارسال شد');
       setShowEmojiTray(false);setReplyTo(null);clearPendingImage();
     }catch(error){
@@ -896,18 +1014,21 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     if(!blob?.size)return;
     if(blob.size>CHAT_AUDIO_MAX_BYTES){showNotice('حجم ویس بیش از حد مجاز شد');return;}
     const socket=socketRef.current;if(!socket?.connected){showNotice('اتصال چت برقرار نیست');return;}
+    if(privateMode&&!privateKeyRef.current){setPrivacyKeyRequired(true);showNotice('برای ارسال خصوصی، کلید رمزنگاری اتاق لازم است');return;}
     setVoiceSending(true);
     try{
-      const data=await blob.arrayBuffer();
-      socket.emit('chat:voice',{type:blob.type||'audio/webm',size:blob.size,data,durationMs,replyToId:replyTo?.id||''},result=>{
-        setVoiceSending(false);
-        if(result?.ok){setReplyTo(null);showNotice('ویس ارسال شد');}
-        else if(result?.error==='audio-too-large')showNotice('حجم ویس بیش از حد مجاز است');
-        else if(result?.error==='audio-too-short')showNotice('ویس خیلی کوتاه بود');
-        else if(result?.error==='rate-limit')showNotice('کمی صبر کن و دوباره ویس بفرست');
-        else showNotice('ارسال ویس انجام نشد');
-      });
-    }catch{setVoiceSending(false);showNotice('ارسال ویس انجام نشد');}
+      const result=await sendChunkedChatVoice(socket,{blob,durationMs,replyTo:replyTo||null,privateMode,privateKey:privateKeyRef.current});
+      if(result?.ok){setReplyTo(null);showNotice('ویس ارسال شد');}
+      else showNotice('ارسال ویس انجام نشد');
+    }catch(error){
+      if(error?.code==='audio-too-large')showNotice('حجم ویس بیش از حد مجاز است');
+      else if(error?.code==='audio-too-short')showNotice('ویس خیلی کوتاه بود');
+      else if(error?.code==='rate-limit')showNotice('کمی صبر کن و دوباره ویس بفرست');
+      else if(error?.code==='storage-busy'||error?.code==='server-busy')showNotice('سرور فعلاً درگیر ارسال رسانه است؛ کمی بعد دوباره امتحان کن');
+      else if(error?.code==='timeout')showNotice('ارسال ویس پاسخ نگرفت؛ اتصال را بررسی کن');
+      else showNotice('ارسال ویس انجام نشد');
+    }
+    finally{setVoiceSending(false);}
   }
   function stopVoiceRecording(cancel=false){
     voiceHoldRef.current=false;
@@ -952,30 +1073,70 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     voiceCancelRef.current=cancel;setVoiceCancelArmed(cancel);
   }
   function finishVoiceRecording(){if(!voiceHoldRef.current&&!voiceRecording)return;stopVoiceRecording(voiceCancelRef.current);}
-  function sendMessage(e){
+  async function sendMessage(e){
     e?.preventDefault();
     const text=message.trim();
     const socket=socketRef.current;
     if(!text||sendingMessage)return;
     if(!socket?.connected){showNotice('اتصال چت برقرار نیست');return;}
+    if(privateMode&&!privateKeyRef.current){setPrivacyKeyRequired(true);showNotice('برای ارسال خصوصی، کلید رمزنگاری اتاق لازم است');return;}
     setSendingMessage(true);
-    socket.emit('chat:send',{text,mentionIds:selectedMentionIds,replyToId:replyTo?.id||''},result=>{
-      setSendingMessage(false);
+    try{
+      let payload={text,mentionIds:selectedMentionIds,replyToId:replyTo?.id||''};
+      if(privateMode){
+        const mentions=(room.members||[]).filter(member=>selectedMentionIds.includes(member.id)&&text.includes(`@${member.name}`)).map(member=>({id:member.id,name:member.name}));
+        const encryptedPayload=await encryptPrivateJson(privateKeyRef.current,{text,mentions,replyTo:replyTo||null});
+        payload={encrypted:true,encryptedPayload};
+      }
+      const result=await emitWithAckTimeout(socket,'chat:send',payload,10000);
       if(result?.ok){stopTyping();setMessage('');setSelectedMentionIds([]);setMentionState(null);setReplyTo(null);setShowEmojiTray(false);}
       else if(result?.error==='rate-limit')showNotice('کمی صبر کن و دوباره پیام بفرست');
+      else if(result?.error==='private-encryption-required')showNotice('این اتاق خصوصی است؛ با لینک خصوصی دوباره وارد شو');
       else showNotice('ارسال پیام انجام نشد');
-    });
+    }catch(error){showNotice(error?.code==='timeout'?'ارسال پیام پاسخ نگرفت؛ اتصال را بررسی کن':'ارسال پیام انجام نشد');}
+    finally{setSendingMessage(false);}
   }
   const insertEmoji=e=>{const next=`${message}${e}`.slice(0,500);setMessage(next);setMentionState(null);signalTyping(next);focusChatInput(next.length);};
   function submitJoinPassword(e){e?.preventDefault();const value=joinPassword.slice(0,64);if(!value)return;setPasswordError('');joinPasswordRef.current=value;joinRoomRef.current?.(value);}
+  async function submitPrivacyKey(e){
+    e?.preventDefault();
+    const key=extractRoomCryptoKey(privacyKeyInput);
+    if(!key){setPrivacyKeyError('کلید خصوصی یا لینک دعوت معتبر نیست');return;}
+    const encryptedSample=(room.messages||[]).find(item=>item?.privateEncrypted&&item?.encryptedPayload)?.encryptedPayload;
+    if(encryptedSample){
+      try{await decryptPrivateJson(key,encryptedSample);}
+      catch{setPrivacyKeyError('این کلید برای محتوای خصوصی این اتاق معتبر نیست');return;}
+    }
+    if(!applyPrivateKey(key)){setPrivacyKeyError('ذخیره کلید خصوصی در این مرورگر انجام نشد');return;}
+    setPrivacyKeyError('');
+    if(!selfId)joinRoomRef.current?.(joinPasswordRef.current);
+    else showNotice('کلید خصوصی اتاق فعال شد');
+  }
+  async function copyPrivateRoomInvite(){
+    const key=privateKeyRef.current||privateKeyString;
+    const url=privateInviteUrl(roomId,key);
+    if(!url){showNotice('کلید خصوصی اتاق در این مرورگر پیدا نشد');return;}
+    try{await navigator.clipboard.writeText(url);showNotice('لینک خصوصی اتاق کپی شد');}
+    catch{showNotice('کپی خودکار نشد؛ لینک خصوصی را از نوار آدرس کپی کن');}
+  }
   function saveRoomPassword(e){
     e?.preventDefault();
     if(!isHost||savingPassword)return;
     const value=roomPassword.slice(0,64);
+    if(value&&!privateKeyRef.current&&room.privateMode){setPrivacyKeyRequired(true);showNotice('برای تغییر تنظیمات اتاق خصوصی، کلید خصوصی قبلی لازم است');return;}
+    if(value&&!room.privateMode){
+      const generated=generateRoomCryptoKey(roomId);
+      if(!generated){showNotice('ساخت کلید رمزنگاری در این مرورگر ممکن نیست');return;}
+      privateKeyRef.current=generated;decryptedKeyRef.current='';decryptedCacheRef.current={};setPrivateKeyString(generated);setDecryptedById({});
+    }
     setSavingPassword(true);
     socketRef.current?.emit('room:set-password',{password:value},(result)=>{
       setSavingPassword(false);
-      if(result?.ok){joinPasswordRef.current=value;setShowRoomSecurity(false);setRoomPassword('');showNotice(result.passwordProtected?'رمز اتاق فعال شد':'رمز اتاق برداشته شد');}
+      if(result?.ok){
+        joinPasswordRef.current=value;setRoomPassword('');
+        if(result.passwordProtected){setRoom(prev=>({...prev,passwordProtected:true,privateMode:true}));showNotice('اتاق قفل شد؛ برای اعضای جدید لینک خصوصی را بفرست');}
+        else {setRoom(prev=>({...prev,passwordProtected:false,privateMode:false}));setShowRoomSecurity(false);showNotice('رمز اتاق برداشته شد');}
+      }
       else if(result?.error==='too-short')showNotice('رمز اتاق حداقل ۴ کاراکتر باشد');
       else showNotice('تغییر رمز اتاق انجام نشد');
     });
@@ -1080,7 +1241,7 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     });
   }
   function closeFloating(){setShowMembers(false);setShowReactions(false);setShowVolume(false);setShowQuality(false);setShowPlaybackRequest(false);}
-  function closeChat(){stopTyping();setChatOpen(false);setShowEmojiTray(false);setShowImageSource(false);setMentionState(null);}
+  function closeChat(){stopTyping();setChatOpen(false);setShowEmojiTray(false);setShowImageSource(false);setShowMediaGallery(false);setMentionState(null);}
   function openChat(){closeFloating();const desktopCinema=typeof window!=='undefined'&&window.innerWidth>920&&window.matchMedia?.('(hover:hover) and (pointer:fine)').matches;if(fullscreenActive&&desktopCinema){setFullscreenChatCollapsed(false);setUnread(0);return;}setChatOpen(true);setUnread(0);}
   function toggleMembers(){const next=!showMembers;closeFloating();setShowMembers(next);}
   function toggleReactions(){const next=!showReactions;closeFloating();setShowReactions(next);}
@@ -1212,21 +1373,26 @@ export default function WatchRoom({ roomId, initialName = '' }) {
       <button type="button" className={`chat-backdrop ${chatOpen?'open':''}`} onClick={closeChat} aria-label="بستن چت"/>
       <aside className={`chat-panel ${chatOpen?'mobile-open':''}`} onClick={e=>e.stopPropagation()}>
         <div className="chat-grabber mobile-only" onClick={closeChat}><span/></div>
-        <div className="chat-head"><div><b>چت زنده</b><span>{room.members.length} نفر در اتاق</span></div><button className="mobile-close" onClick={closeChat}><Icon name="close"/></button></div>
+        <div className="chat-head"><div><b>چت زنده</b><span>{room.members.length} نفر در اتاق{privateMode?' · خصوصی':''}</span></div><div className="chat-head-actions"><button type="button" className={`chat-media-button ${showMediaGallery?'active':''}`} onClick={()=>setShowMediaGallery(value=>!value)} aria-label="گالری رسانه‌های چت" title="رسانه‌های چت"><Icon name="image" size={17}/>{chatMediaCount>0&&<small>{chatMediaCount>99?'99+':chatMediaCount}</small>}</button><button className="mobile-close" onClick={closeChat}><Icon name="close"/></button></div></div>
+        <MediaGallery open={showMediaGallery} onClose={()=>setShowMediaGallery(false)} messages={room.messages} decryptedById={decryptedById} privateKey={privateKeyString} onJump={id=>{setShowMediaGallery(false);window.setTimeout(()=>scrollToReplyTarget(id),60)}}/>
         <div className="messages" ref={messagesRef}>
           {room.messages.length===0&&<div className="empty-chat"><span><Icon name="chat" size={26}/></span><b>هنوز پیامی نیست</b><small>اولین پیام را تو بفرست؛ فقط اسپویل نکن.</small></div>}
           {room.messages.map(msg=>{
             const role=roleMap.get(msg.roleId);
-            const mentionsSelf=Boolean(selfId&&(msg.mentions||[]).some(item=>item.id===selfId));
-            return <article key={msg.id} data-message-id={msg.id} className={`${msg.senderId===selfId?'message mine':'message'} ${msg.isHost?'host-message':''} ${msg.isAdmin?'admin-message':''} ${msg.imageUrl?'image-message':''} ${msg.audioUrl?'voice-message':''} ${msg.replyTo?'reply-message':''} ${mentionsSelf?'mentions-me':''}`}>
+            const content=contentForMessage(msg);
+            const mentions=Array.isArray(content?.mentions)?content.mentions:[];
+            const reply=content?.replyTo||null;
+            const mentionsSelf=Boolean(selfId&&mentions.some(item=>item.id===selfId));
+            return <article key={msg.id} data-message-id={msg.id} className={`${msg.senderId===selfId?'message mine':'message'} ${msg.isHost?'host-message':''} ${msg.isAdmin?'admin-message':''} ${msg.imageUrl?'image-message':''} ${msg.audioUrl?'voice-message':''} ${reply?'reply-message':''} ${mentionsSelf?'mentions-me':''} ${content?.locked?'private-message-locked':''}`}>
               <div className="message-top">
-                <b>{msg.isHost&&<Icon name="crown" size={13}/>} {msg.isAdmin&&<Icon name="shield" size={12}/>}<span>{msg.senderId===selfId?'شما':msg.senderName}</span>{msg.isAdmin&&<span className="chat-system-badge admin">مدیر</span>}{mentionsSelf&&<span className="chat-system-badge mention">تگ شدی</span>}{role&&<span className="chat-role-badge" style={{'--role-color':role.color||'#6c8cff'}}>{role.emoji&&<span className="role-emoji">{role.emoji}</span>}{role.name}</span>}</b>
+                <b>{msg.isHost&&<Icon name="crown" size={13}/>} {msg.isAdmin&&<Icon name="shield" size={12}/>}<span>{msg.senderId===selfId?'شما':msg.senderName}</span>{msg.isAdmin&&<span className="chat-system-badge admin">مدیر</span>}{mentionsSelf&&<span className="chat-system-badge mention">تگ شدی</span>}{msg.privateEncrypted&&<span className="chat-system-badge private"><Icon name="lock" size={10}/> خصوصی</span>}{role&&<span className="chat-role-badge" style={{'--role-color':role.color||'#6c8cff'}}>{role.emoji&&<span className="role-emoji">{role.emoji}</span>}{role.name}</span>}</b>
                 <div className="message-meta">{msg.senderId!==selfId&&<button type="button" className="message-action" onClick={()=>tagMessageSender(msg)} aria-label={`تگ کردن ${msg.senderName}`} title="تگ"><Icon name="tag" size={12}/></button>}<button type="button" className="message-action" onClick={()=>startReply(msg)} aria-label={`پاسخ به ${msg.senderName}`} title="ریپلای"><Icon name="reply" size={13}/></button>{canModerate&&<button type="button" className="message-action message-delete-action" onClick={()=>deleteChatMessage(msg)} aria-label="حذف پیام" title="حذف پیام"><Icon name="trash" size={12}/></button>}<time>{formatTime(msg.createdAt)}</time>{msg.senderId===selfId&&<span className={`message-delivery ${msg.seen?'seen':''}`} title={msg.seen?'دیده شد':'ارسال شد'} aria-label={msg.seen?'دیده شد':'ارسال شد'}><Icon name={msg.seen?'doubleCheck':'check'} size={13}/></span>}</div>
               </div>
-              {msg.replyTo&&<button type="button" className="message-reply-preview" onClick={()=>scrollToReplyTarget(msg.replyTo.id)}><span><Icon name="reply" size={13}/></span><div><b>{msg.replyTo.senderId===selfId?'شما':msg.replyTo.senderName}</b><small>{replyPreviewText(msg.replyTo)}</small></div></button>}
-              {msg.audioUrl&&<VoiceMessage src={msg.audioUrl} durationMs={msg.audioDurationMs}/>}
-              {msg.imageUrl&&<a className="chat-image-link" href={msg.imageUrl} target="_blank" rel="noreferrer" aria-label="باز کردن تصویر"><img className="chat-image" src={msg.imageUrl} alt={msg.imageName||'تصویر چت'} loading="lazy" onError={e=>{e.currentTarget.style.display='none';if(e.currentTarget.nextElementSibling)e.currentTarget.nextElementSibling.style.display='flex'}}/><span className="chat-image-fallback"><Icon name="image" size={16}/> باز کردن تصویر</span></a>}
-              {msg.text&&<p>{renderChatText(msg.text,msg.mentions,selfId)}</p>}
+              {content?.locked&&<div className="private-message-placeholder"><Icon name="lock" size={15}/><span>برای بازکردن این پیام، لینک خصوصی اتاق لازم است.</span></div>}
+              {!content?.locked&&reply&&<button type="button" className="message-reply-preview" onClick={()=>scrollToReplyTarget(reply.id)}><span><Icon name="reply" size={13}/></span><div><b>{reply.senderId===selfId?'شما':reply.senderName}</b><small>{replyPreviewText(reply)}</small></div></button>}
+              {!content?.locked&&msg.audioUrl&&(msg.privateEncrypted?<EncryptedAudioLoader src={msg.audioUrl} cipher={msg.mediaCipher} privateKey={privateKeyString} mime={content.audio?.mime||'audio/webm'}>{({url,loading,error})=>url?<VoiceMessage src={url} durationMs={content.audio?.durationMs}/>:<div className={`private-media-placeholder ${error?'error':''}`}><Icon name="lock" size={14}/><span>{loading?'در حال بازکردن ویس خصوصی…':error?'ویس خصوصی باز نشد':'ویس خصوصی'}</span></div>}</EncryptedAudioLoader>:<VoiceMessage src={msg.audioUrl} durationMs={msg.audioDurationMs}/>)}
+              {!content?.locked&&msg.imageUrl&&(msg.privateEncrypted?<EncryptedImage src={msg.imageUrl} cipher={msg.mediaCipher} privateKey={privateKeyString} mime={content.image?.mime||'image/jpeg'} alt={content.image?.name||'تصویر خصوصی'}/>:<a className="chat-image-link" href={msg.imageUrl} target="_blank" rel="noreferrer" aria-label="باز کردن تصویر"><img className="chat-image" src={msg.imageUrl} alt={msg.imageName||'تصویر چت'} loading="lazy" onError={e=>{e.currentTarget.style.display='none';if(e.currentTarget.nextElementSibling)e.currentTarget.nextElementSibling.style.display='flex'}}/><span className="chat-image-fallback"><Icon name="image" size={16}/> باز کردن تصویر</span></a>)}
+              {!content?.locked&&content?.text&&<p>{renderChatText(content.text,mentions,selfId)}</p>}
             </article>;
           })}
           <div className={`typing-indicator ${typingUsers.length?'visible':''}`} aria-live="polite"><span className="typing-dots"><i/><i/><i/></span><b>{typingLabel(typingUsers)}</b>{typingUsers.length>0&&<span>…</span>}</div>
@@ -1251,7 +1417,8 @@ export default function WatchRoom({ roomId, initialName = '' }) {
     {showSavedVideos&&<div className="modal-backdrop saved-video-backdrop" onClick={()=>!savedVideoBusy&&setShowSavedVideos(false)}><div className="saved-video-modal" role="dialog" aria-modal="true" aria-labelledby="saved-video-title" onClick={e=>e.stopPropagation()}><div className="popover-head"><div><b id="saved-video-title">ویدیوهای ذخیره‌شده</b><small>این لیست برای پروفایل همین مرورگر است و به اتاق خاصی وابسته نیست.</small></div><button type="button" onClick={()=>setShowSavedVideos(false)}><Icon name="close"/></button></div>{canModerate&&room.videoUrl&&<button type="button" className="save-current-progress" onClick={saveCurrentProgress} disabled={savingProgress}><span><Icon name="bookmark" size={18}/></span><div><b>{savingProgress?'در حال ذخیره…':'ذخیره تا اینجای ویدیو'}</b><small>{room.videoTitle||displayHost(room.originalUrl||room.videoUrl)} · {formatClock(currentTime)}</small></div></button>}<div className="saved-video-list">{savedVideos.length===0?<div className="saved-video-empty"><span><Icon name="history" size={23}/></span><b>هنوز چیزی ذخیره نکردی</b><small>{canModerate?'وقتی فیلم در حال پخش است، موقعیت فعلی را ذخیره کن.':'ذخیره‌ها وقتی میزبان یا مدیر باشی از همینجا قابل استفاده‌اند.'}</small></div>:savedVideos.map(item=><article className="saved-video-card" key={item.id}><div className="saved-video-card-main"><b>{item.videoTitle||displayHost(item.originalUrl)}</b><span>{displayHost(item.originalUrl)}</span><small><Icon name="history" size={13}/> ادامه از {formatClock(item.time||0)}</small></div><div className="saved-video-actions"><button type="button" className="saved-video-use" onClick={()=>useSavedVideo(item)} disabled={Boolean(savedVideoBusy)||!canModerate}>{savedVideoBusy===item.id?'…':'ادامه'}</button><button type="button" className="saved-video-delete" onClick={()=>deleteSavedVideo(item)} disabled={Boolean(savedVideoBusy)} aria-label="حذف ذخیره"><Icon name="trash" size={15}/></button></div></article>)}</div><div className="saved-video-footer"><button type="button" onClick={()=>{setShowSavedVideos(false);setShowSource(true)}}><Icon name="link" size={16}/><span>{isHost?'انتخاب ویدیوی دیگر':'پیشنهاد ویدیوی دیگر'}</span></button>{!canModerate&&savedVideos.length>0&&<small>برای پخش یک ذخیره در اتاق باید میزبان یا مدیر باشی.</small>}</div></div></div>}
     {memberActionTarget&&<div className="modal-backdrop member-action-backdrop" onClick={()=>!memberActionBusy&&setMemberActionTarget(null)}><div className="member-action-modal" onClick={e=>e.stopPropagation()}><div className="member-action-head"><span className={`member-action-avatar ${memberActionTarget.isAdmin?'admin':''}`}><Icon name={memberActionTarget.isAdmin?'shield':'user'} size={20}/></span><div><b>{memberActionTarget.name}</b><small>{memberActionTarget.isAdmin?'مدیر اتاق':'عضو اتاق'}</small></div><button type="button" onClick={()=>setMemberActionTarget(null)} disabled={memberActionBusy}><Icon name="close"/></button></div>{isHost&&memberActionTarget.id!==room.hostId&&<button type="button" className={`member-action-admin ${memberActionTarget.isAdmin?'remove':''}`} disabled={memberActionBusy} onClick={()=>setMemberAdmin(memberActionTarget,!memberActionTarget.isAdmin)}><Icon name="shield" size={18}/><div><b>{memberActionTarget.isAdmin?'برداشتن مدیریت':'مدیر کردن'}</b><small>{memberActionTarget.isAdmin?'دسترسی مدیریت این عضو حذف می‌شود':'حداکثر ۳ مدیر کمکی برای اتاق'}</small></div></button>}{canModerate&&memberActionTarget.id!==room.hostId&&(!isAdmin||!memberActionTarget.isAdmin)&&<button type="button" className="member-action-kick" disabled={memberActionBusy} onClick={()=>kickMember(memberActionTarget)}><Icon name="userMinus" size={18}/><div><b>خارج کردن از اتاق</b><small>این کار فقط همین نشست کاربر را خارج می‌کند</small></div></button>}</div></div>}
     {passwordRequired&&<div className="modal-backdrop password-gate-backdrop"><form className="password-gate-modal" onSubmit={submitJoinPassword} onClick={e=>e.stopPropagation()}><span className="password-gate-icon"><Icon name="lock" size={23}/></span><div><h3>این اتاق رمز دارد</h3><p>برای ورود، رمز اتاق را وارد کن.</p></div><input autoFocus type="password" value={joinPassword} onChange={e=>{setJoinPassword(e.target.value.slice(0,64));setPasswordError('')}} placeholder="رمز اتاق" maxLength={64} autoComplete="current-password"/><div className={`password-gate-error ${passwordError?'visible':''}`}>{passwordError||' '}</div><button type="submit" disabled={!joinPassword}>ورود به اتاق</button><a href="/">برگشت به صفحه اول</a></form></div>}
-    {showRoomSecurity&&isHost&&<div className="modal-backdrop" onClick={()=>setShowRoomSecurity(false)}><form className="room-security-modal" onSubmit={saveRoomPassword} onClick={e=>e.stopPropagation()}><div className="popover-head"><div><b>رمز اتاق</b><small>{room.passwordProtected?'این اتاق الان با رمز محافظت می‌شود':'در صورت نیاز برای ورود اعضای جدید رمز بگذار'}</small></div><button type="button" onClick={()=>setShowRoomSecurity(false)}><Icon name="close"/></button></div><div className="security-status"><span className={room.passwordProtected?'protected':''}><Icon name="lock" size={16}/></span><div><b>{room.passwordProtected?'رمز فعال است':'بدون رمز'}</b><small>اعضایی که همین حالا داخل اتاق هستند خارج نمی‌شوند.</small></div></div><label>رمز جدید<input autoFocus type="password" value={roomPassword} onChange={e=>setRoomPassword(e.target.value.slice(0,64))} placeholder={room.passwordProtected?'برای تغییر رمز، رمز جدید را بنویس':'حداقل ۴ کاراکتر'} maxLength={64} autoComplete="new-password"/></label><button className="modal-submit" type="submit" disabled={savingPassword||!roomPassword}>{savingPassword?'در حال ذخیره…':room.passwordProtected?'تغییر رمز':'فعال کردن رمز'}</button>{room.passwordProtected&&<button className="security-remove" type="button" disabled={savingPassword} onClick={()=>{setSavingPassword(true);socketRef.current?.emit('room:set-password',{password:''},result=>{setSavingPassword(false);if(result?.ok){joinPasswordRef.current='';setShowRoomSecurity(false);setRoomPassword('');showNotice('رمز اتاق برداشته شد')}else showNotice('برداشتن رمز انجام نشد')})}}>برداشتن رمز اتاق</button>}</form></div>}
+    {privacyKeyRequired&&<div className="modal-backdrop password-gate-backdrop privacy-key-backdrop"><form className="password-gate-modal privacy-key-modal" onSubmit={submitPrivacyKey} onClick={e=>e.stopPropagation()}><span className="password-gate-icon"><Icon name="lock" size={23}/></span><div><h3>کلید خصوصی اتاق لازم است</h3><p>لینک خصوصی میزبان یا کلید رمزنگاری را وارد کن. این کلید داخل مرورگر می‌ماند و برای سرور ارسال نمی‌شود.</p></div><textarea autoFocus value={privacyKeyInput} onChange={e=>{setPrivacyKeyInput(e.target.value.slice(0,800));setPrivacyKeyError('')}} placeholder="لینک خصوصی یا کلید اتاق" rows={3}/><div className={`password-gate-error ${privacyKeyError?'visible':''}`}>{privacyKeyError||' '}</div><button type="submit" disabled={!privacyKeyInput.trim()}>فعال کردن محتوای خصوصی</button>{selfId&&<button type="button" className="privacy-key-later" onClick={()=>setPrivacyKeyRequired(false)}>فعلاً بستن</button>}<a href="/">برگشت به صفحه اول</a></form></div>}
+    {showRoomSecurity&&isHost&&<div className="modal-backdrop" onClick={()=>setShowRoomSecurity(false)}><form className="room-security-modal" onSubmit={saveRoomPassword} onClick={e=>e.stopPropagation()}><div className="popover-head"><div><b>حریم خصوصی اتاق</b><small>{room.passwordProtected?'رمز ورود و رمزنگاری سرتاسری فعال است':'برای اعضای جدید رمز و محتوای رمزنگاری‌شده فعال کن'}</small></div><button type="button" onClick={()=>setShowRoomSecurity(false)}><Icon name="close"/></button></div><div className="security-status"><span className={room.passwordProtected?'protected':''}><Icon name="lock" size={16}/></span><div><b>{room.passwordProtected?'اتاق خصوصی است':'اتاق عمومی است'}</b><small>{room.passwordProtected?'متن، تصویر و ویس قبل از خروج از مرورگر رمز می‌شوند.':'با فعال‌کردن رمز، پیام‌های قبلی پاک و پیام‌های جدید خصوصی می‌شوند.'}</small></div></div>{room.passwordProtected&&<div className="e2ee-security-note"><Icon name="shield" size={18}/><div><b>رمزنگاری سرتاسری فعال</b><small>کلید محتوا داخل لینک خصوصی است و برای سرور ارسال نمی‌شود. لینک خصوصی را فقط برای اعضای مورد اعتماد بفرست.</small></div></div>}<label>{room.passwordProtected?'رمز جدید':'رمز ورود'}<input autoFocus type="password" value={roomPassword} onChange={e=>setRoomPassword(e.target.value.slice(0,64))} placeholder={room.passwordProtected?'برای تغییر رمز، رمز جدید را بنویس':'حداقل ۴ کاراکتر'} maxLength={64} autoComplete="new-password"/></label><button className="modal-submit" type="submit" disabled={savingPassword||!roomPassword}>{savingPassword?'در حال ذخیره…':room.passwordProtected?'تغییر رمز':'فعال کردن حالت خصوصی'}</button>{room.passwordProtected&&<button className="private-invite-copy" type="button" onClick={copyPrivateRoomInvite}><Icon name="copy" size={16}/><span>کپی لینک خصوصی اعضا</span></button>}{room.passwordProtected&&<button className="security-remove" type="button" disabled={savingPassword} onClick={()=>{setSavingPassword(true);socketRef.current?.emit('room:set-password',{password:''},result=>{setSavingPassword(false);if(result?.ok){joinPasswordRef.current='';forgetPrivateKey();setRoom(prev=>({...prev,passwordProtected:false,privateMode:false}));setShowRoomSecurity(false);setRoomPassword('');showNotice('حالت خصوصی اتاق برداشته شد')}else showNotice('برداشتن رمز انجام نشد')})}}>برداشتن حالت خصوصی</button>}</form></div>}
     {showRoleManager&&roleTarget&&<div className="modal-backdrop role-backdrop" onClick={closeRoleManager}><div className="role-modal" role="dialog" aria-modal="true" aria-labelledby="role-title" onClick={e=>e.stopPropagation()}><div className="popover-head"><div><b id="role-title">رول برای {roleTarget.name}</b><small>{roleTarget.id===selfId&&!isHost?'فقط رول خودت را می‌توانی تغییر بدهی':'عنوان، رنگ و نشانهٔ رول کنار نام شخص در چت دیده می‌شود'}</small></div><button type="button" onClick={closeRoleManager}><Icon name="close"/></button></div><div className="role-list"><button type="button" className="role-choice role-none" onClick={()=>assignRole(null)}><span>بدون رول</span></button>{(room.roles||[]).map(role=>{const member=room.members.find(m=>m.id===roleTarget.id);const active=member?.roleId===role.id;return <button type="button" key={role.id} className={`role-choice ${active?'active':''}`} style={{'--role-color':role.color||'#6c8cff'}} onClick={()=>assignRole(role.id)}><span><span className="role-choice-dot"/>{role.emoji&&<span className="role-emoji">{role.emoji}</span>}{role.name}</span>{active&&<Icon name="check" size={16}/>}</button>})}</div><form className="role-create-form" onSubmit={createAndAssignRole}><label>رول جدید</label><input autoFocus value={newRoleName} onChange={e=>setNewRoleName(e.target.value)} placeholder="نام رول" maxLength={24}/><div className="role-style-section"><span>ایموجی</span><div className="role-emoji-picker">{ROLE_EMOJIS.map((emoji,index)=><button type="button" key={`${emoji}-${index}`} className={newRoleEmoji===emoji?'active':''} onClick={()=>setNewRoleEmoji(emoji)} aria-label={emoji?`انتخاب ${emoji}`:'بدون ایموجی'}>{emoji||<Icon name="close" size={14}/>}</button>)}</div></div><div className="role-style-section"><span>رنگ</span><div className="role-color-picker">{ROLE_COLORS.map(color=><button type="button" key={color} className={newRoleColor===color?'active':''} style={{'--swatch':color}} onClick={()=>setNewRoleColor(color)} aria-label={`انتخاب رنگ ${color}`}><span/></button>)}</div></div><div className="role-preview"><small>پیش‌نمایش</small><span className="chat-role-badge" style={{'--role-color':newRoleColor}}>{newRoleEmoji&&<span className="role-emoji">{newRoleEmoji}</span>}{newRoleName.trim()||'نام رول'}</span></div><button type="submit" className="role-create-submit" disabled={!newRoleName.trim()}>ساخت و اختصاص</button></form></div></div>}
     {showSource&&<div className="modal-backdrop" onClick={()=>setShowSource(false)}><div className="source-modal" onClick={e=>e.stopPropagation()}>{isHost?<><div className="popover-head"><div><b>انتخاب فیلم</b><small>لینک خودت یا پیشنهادهای اعضای اتاق</small></div><button onClick={()=>setShowSource(false)}><Icon name="close"/></button></div><input autoFocus value={videoInput} onChange={e=>setVideoInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&setVideo()} placeholder="https://..."/><p>آپارات خودکار آماده می‌شود. لینک مستقیم MP4 / WebM / M3U8 از سایت‌های دیگر هم پخش می‌شود؛ بعضی صفحه‌های عادی یا ویدیوهای محافظت‌شده ممکن است لینک مستقیم لازم داشته باشند.</p><div className="source-modal-actions"><button className="modal-submit" onClick={setVideo} disabled={resolving}>{resolving?'در حال آماده‌سازی…':'پخش در اتاق'}</button>{room.videoUrl&&<button type="button" className="modal-clear-video" onClick={clearVideo}><Icon name="trash" size={17}/><span>حذف ویدیو</span></button>}</div><div className="suggestion-review"><div className="suggestion-review-head"><b>پیشنهادهای اعضا</b><small>{videoSuggestions.length?`${videoSuggestions.length} پیشنهاد در انتظار بررسی`:'هنوز پیشنهادی نیست'}</small></div>{videoSuggestions.length>0&&<div className="suggestion-list">{videoSuggestions.map(item=><article className="suggestion-card" key={item.id}><div className="suggestion-meta"><b>{item.senderName}</b><span>{displayHost(item.url)}</span></div><a href={item.url} target="_blank" rel="noreferrer" className="suggestion-url" title={item.url}>{item.url}</a><div className="suggestion-actions"><button type="button" className="suggestion-accept" onClick={()=>acceptSuggestion(item)} disabled={Boolean(resolvingSuggestionId)}>{resolvingSuggestionId===item.id?'در حال بررسی…':'استفاده از این لینک'}</button><button type="button" className="suggestion-reject" onClick={()=>rejectSuggestion(item.id)} disabled={Boolean(resolvingSuggestionId)}>رد</button></div></article>)}</div>}</div></>:<form className="suggest-video-form" onSubmit={suggestVideo}><div className="popover-head"><div><b>پیشنهاد فیلم</b><small>لینک فیلم را برای میزبان بفرست</small></div><button type="button" onClick={()=>setShowSource(false)}><Icon name="close"/></button></div><input autoFocus value={suggestionInput} onChange={e=>setSuggestionInput(e.target.value)} placeholder="https://example.com/video"/><p>می‌توانی لینک هر سایتی را پیشنهاد بدهی. میزبان قبل از پخش آن را بررسی می‌کند؛ برای بعضی سایت‌ها پخش داخل اتاق به لینک مستقیم ویدیو نیاز دارد.</p><button className="modal-submit" type="submit" disabled={!suggestionInput.trim()}>ارسال پیشنهاد به میزبان</button></form>}</div></div>}
     {showLeaveConfirm&&<div className="modal-backdrop leave-backdrop" onClick={()=>setShowLeaveConfirm(false)}><div className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="leave-title" onClick={e=>e.stopPropagation()}><span className="confirm-icon"><Icon name="back" size={24}/></span><h3 id="leave-title">از اتاق خارج می‌شی؟</h3><p>اگر خارج شوی، برای برگشت دوباره باید وارد همین کد اتاق شوی.</p><div className="confirm-actions"><button type="button" className="confirm-cancel" onClick={()=>setShowLeaveConfirm(false)}>نه، می‌مونم</button><button type="button" className="confirm-leave" onClick={leaveRoom}>بله، خروج</button></div></div></div>}

@@ -246,3 +246,17 @@ UI-only interaction polish. Playback room sync protocol was not changed. Chat sc
 - Empty room video/progress cleanup remains separate from long-lived personal Saved Videos.
 - Extracted quality, chat-media upload and Socket.IO acknowledgement helpers into focused modules.
 - Added `ARCHITECTURE.md` for maintainers.
+
+
+## v3.21.0 — real image validation, media gallery, exact quality and private-room E2EE
+
+- Chat image cap is 5 MiB. Public uploads are signature-checked again on the server; private uploads are signature-checked before browser-side encryption and remain opaque to the server.
+- Added an in-chat media gallery derived from live message state. No duplicate media files/database/index are created.
+- Manual HLS quality state is applied immediately and reasserted after selection; direct multi-source providers swap to the chosen resolution URL while keeping playback state.
+- Enabling a room password also enables private chat mode. Existing chat is cleared at the privacy boundary. New text/image/voice content is AES-256-GCM encrypted client-side.
+- The E2EE key is separate from the room password and lives in the secure invite URL fragment/browser storage; it is not sent to the Node server.
+- Members joining a private room need both the normal room password and the private invite/key.
+- Image and voice uploads both use bounded chunk sessions; private media is encrypted in the browser before those chunks leave the client.
+- Private Gallery voice files are not fetched/decrypted until the user explicitly opens that voice; private images remain lazy by viewport proximity.
+- Switching a public Room to Private always rotates to a fresh content key; turning Private off clears the saved Room key from that browser.
+- Direct multi-quality providers reuse the Room's resolved source list for immediate quality changes instead of re-calling the provider on every selection.

@@ -1444,3 +1444,52 @@
   .quality-resolution-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}
   .chat-link>span{max-width:140px}
 }
+
+/* v3.21 — chat media gallery + private-room E2EE UI */
+.chat-panel{position:relative}
+.chat-head-actions{display:flex!important;align-items:center;gap:7px;min-width:auto!important}
+.chat-media-button{position:relative;width:34px;height:34px;border:1px solid #292d37;border-radius:10px;background:#151820;color:#aeb5c2;display:grid;place-items:center;cursor:pointer;transition:.16s ease}
+.chat-media-button:hover,.chat-media-button.active{color:#fff;background:#202530;border-color:#3b4352}
+.chat-media-button small{position:absolute;top:-5px;right:-5px;min-width:17px;height:17px;padding:0 4px;border-radius:9px;display:grid;place-items:center;background:var(--accent);color:#fff;font-size:8px;font-weight:800;border:2px solid #0c0e12}
+.chat-media-gallery{position:absolute;z-index:18;top:57px;left:0;right:0;bottom:0;display:grid;grid-template-rows:auto minmax(0,1fr);background:#0c0e12f8;backdrop-filter:blur(12px);border-top:1px solid #20242d;overflow:hidden}
+.chat-media-gallery-head{height:48px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 12px;border-bottom:1px solid #20242d}
+.chat-media-gallery-head>div{display:grid;gap:2px}.chat-media-gallery-head b{font-size:12px}.chat-media-gallery-head small{font-size:8px;color:#7e8694}
+.chat-media-gallery-head>button{width:31px;height:31px;border:1px solid #2b303a;border-radius:9px;background:#151820;color:#c8ccd5;font-size:20px;line-height:1;display:grid;place-items:center}
+.chat-media-gallery-scroll{min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:11px;scrollbar-width:none}.chat-media-gallery-scroll::-webkit-scrollbar{display:none}
+.chat-media-gallery-scroll section+section{margin-top:16px}.chat-media-section-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;color:#aeb4c0}.chat-media-section-title b{font-size:10px}.chat-media-section-title span{font-size:8px;color:#727b89}
+.media-gallery-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}
+.media-gallery-image-card{min-width:0;background:#12151b;border:1px solid #20252e;border-radius:11px;overflow:hidden}.media-gallery-image-frame{aspect-ratio:1;background:#0a0c10;overflow:hidden}.media-gallery-image-frame>a,.media-gallery-image-frame .encrypted-image-wrap,.media-gallery-image-frame .chat-image-link{width:100%;height:100%;display:block}.media-gallery-image-frame img,.media-gallery-image-frame .chat-image{width:100%;height:100%;object-fit:cover;display:block;margin:0;border-radius:0}
+.media-gallery-image-card>button{width:100%;border:0;background:#12151b;color:#d5d8de;padding:6px 7px;display:flex;align-items:center;justify-content:space-between;gap:5px;text-align:right}.media-gallery-image-card>button b{font-size:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.media-gallery-image-card>button small{font-size:7px;color:#6f7784;white-space:nowrap}
+.media-gallery-audio-list{display:grid;gap:7px}.media-gallery-audio-card{display:grid;grid-template-columns:31px minmax(0,1fr) 31px;align-items:center;gap:8px;padding:8px;border:1px solid #232934;border-radius:12px;background:#12151b}.media-gallery-audio-icon{width:31px;height:31px;border-radius:10px;background:#1c2230;color:#99b7ef;display:grid;place-items:center}.media-gallery-audio-icon svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8}.media-gallery-audio-main{min-width:0;display:grid;gap:5px}.media-gallery-audio-main>div{display:flex;justify-content:space-between;gap:6px}.media-gallery-audio-main b{font-size:9px}.media-gallery-audio-main small{font-size:8px;color:#727b89}.media-gallery-audio-main audio{width:100%;height:30px}.media-gallery-jump{width:31px;height:31px;border:1px solid #29303c;border-radius:9px;background:#171c24;color:#9aa5b7}.media-gallery-audio-state{font-size:8px;color:#7d8798}.media-gallery-audio-state.error{color:#d98b9b}
+.chat-media-gallery-empty{height:100%;min-height:180px;display:grid;place-items:center;align-content:center;gap:7px;text-align:center;color:#78808e;padding:20px}.chat-media-gallery-empty>span{width:48px;height:48px;border:1px solid #252b35;border-radius:15px;background:#151920;color:#8da6d0;display:grid;place-items:center}.chat-media-gallery-empty svg{width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:1.7}.chat-media-gallery-empty b{font-size:11px;color:#b9bec8}.chat-media-gallery-empty small{font-size:8px;max-width:240px;line-height:1.8}
+.encrypted-image-wrap{display:block;max-width:100%}.encrypted-audio-wrap{min-width:0}.private-media-placeholder,.private-message-placeholder{display:flex;align-items:center;gap:7px;min-height:36px;padding:8px 10px;border:1px dashed #343b48;border-radius:10px;background:#10141b;color:#8e98a8;font-size:9px;line-height:1.7}.private-media-placeholder.error{border-color:#5b343d;color:#d996a4}.private-message-placeholder{margin-top:5px}.chat-system-badge.private{display:inline-flex;align-items:center;gap:3px;color:#9bc6b3;background:#12251e;border-color:#244638}
+
+.privacy-key-modal textarea{width:100%;min-height:82px;resize:none;border:1px solid #2d3440;border-radius:14px;background:#0b0e13;color:#eef0f4;padding:11px 12px;font:inherit;font-size:11px;line-height:1.7;direction:ltr;text-align:left;outline:none}.privacy-key-modal textarea:focus{border-color:#51627d;box-shadow:0 0 0 3px #35435b33}.privacy-key-later{background:#191d25!important;color:#aab0ba!important;border:1px solid #292f3a!important}.e2ee-security-note{display:flex;gap:9px;align-items:flex-start;padding:10px;border:1px solid #27473b;border-radius:13px;background:#102019;color:#add6c4}.e2ee-security-note>div{display:grid;gap:3px}.e2ee-security-note b{font-size:10px}.e2ee-security-note small{font-size:8px;line-height:1.75;color:#7fae9b}.private-invite-copy{min-height:42px;border:1px solid #315044;border-radius:13px;background:#14271f;color:#b8e1d0;display:flex;align-items:center;justify-content:center;gap:7px;font-weight:750}
+
+@media(max-width:820px),(pointer:coarse){
+  .chat-media-gallery{top:44px;border-radius:0 0 14px 14px}.chat-media-gallery-head{height:45px;padding:7px 9px}.media-gallery-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.chat-media-button{width:34px;height:34px}.chat-head-actions{gap:5px}
+}
+@media(max-width:390px){.media-gallery-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.chat-media-gallery-scroll{padding:8px}.media-gallery-audio-card{grid-template-columns:29px minmax(0,1fr) 29px;gap:6px;padding:7px}}
+@media(max-width:820px) and (orientation:landscape){.chat-media-gallery{top:40px}.media-gallery-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+
+/* v3.21 final performance pass: private voice files in Gallery are decrypted only
+   after an explicit tap, so merely opening/scrolling Gallery cannot pull several
+   multi-megabyte encrypted audio files into memory. */
+.media-gallery-private-audio-load{
+  min-height:31px;
+  width:100%;
+  border:1px solid #2a3b36;
+  border-radius:9px;
+  background:#111d19;
+  color:#9bc6b3;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  padding:5px 8px;
+  font:inherit;
+  font-size:8px;
+  cursor:pointer;
+}
+.media-gallery-private-audio-load:hover,.media-gallery-private-audio-load:focus-visible{background:#162720;border-color:#3b5a4e;outline:none}
+.media-gallery-private-audio-load svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8}
